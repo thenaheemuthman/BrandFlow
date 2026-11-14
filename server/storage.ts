@@ -658,7 +658,6 @@ export function getEnvironmentStorageStatus(
 ): StorageStatus {
   const hasUrl = Boolean(process.env.SUPABASE_URL?.trim());
   const hasAnon = Boolean(process.env.SUPABASE_ANON_KEY?.trim());
-  const hasAnon = Boolean(process.env.SUPABASE_ANON_KEY?.trim());
   const hasGemini = Boolean(
     process.env.GEMINI_API_KEY?.trim() &&
       process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY',
