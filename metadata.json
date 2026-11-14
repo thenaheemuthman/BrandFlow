@@ -1,0 +1,6 @@
+{
+  "name": "BrandFlow AI",
+  "description": "From Brand Strategy to Content Execution — modern brand strategy workspaces and content management foundation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
