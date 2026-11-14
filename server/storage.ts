@@ -488,7 +488,7 @@ export class SupabaseStorageRepository implements StorageRepository {
       method: 'POST',
       headers: { Prefer: 'return=representation' },
       body: JSON.stringify({
-        user_id: DEFAULT_USER_ID,
+        user_id: this.userId,
         brand_name: clean.brandName,
         business_description: clean.businessDescription,
         industry: clean.industry,
@@ -510,7 +510,7 @@ export class SupabaseStorageRepository implements StorageRepository {
     await this.request('brand_activities', {
       method: 'POST',
       body: JSON.stringify({
-        user_id: DEFAULT_USER_ID,
+        user_id: this.userId,
         brand_id: created.id,
         brand_name: created.brandName,
         type: 'brand_created',
@@ -551,7 +551,7 @@ export class SupabaseStorageRepository implements StorageRepository {
     await this.request('brand_activities', {
       method: 'POST',
       body: JSON.stringify({
-        user_id: DEFAULT_USER_ID,
+        user_id: this.userId,
         brand_id: updated.id,
         brand_name: updated.brandName,
         type: 'brand_updated',
@@ -570,7 +570,7 @@ export class SupabaseStorageRepository implements StorageRepository {
     await this.request('brand_activities', {
       method: 'POST',
       body: JSON.stringify({
-        user_id: DEFAULT_USER_ID,
+        user_id: this.userId,
         brand_id: null,
         brand_name: existing.brandName,
         type: 'brand_deleted',
