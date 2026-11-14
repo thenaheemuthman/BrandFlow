@@ -156,12 +156,7 @@ export class StrategyService {
 
     const prior = await this.list(String(brand.id), moduleKey);
     const nextVersion = prior.reduce((max, item) => Math.max(max, item.version), 0) + 1;
-    if (prior.some((item) => item.status === 'approved')) {
-      await this.db(
-        `brand_strategy_documents?brand_id=eq.${encodeURIComponent(String(brand.id))}&module_key=eq.${moduleKey}&status=eq.approved`,
-        { method: 'PATCH', body: JSON.stringify({ status: 'superseded' }) },
-      );
-    }
+    // Keep the currently approved version active until a replacement draft is explicitly approved.
 
     const rows = await this.db<any[]>('brand_strategy_documents', {
       method: 'POST',
