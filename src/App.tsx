@@ -25,8 +25,8 @@ import { LoginView } from './components/auth/LoginView';
 
 const INITIAL_PROFILE: UserProfile = {
   id: 'user-default',
-  fullName: 'Uthman Aheem',
-  email: 'uthmanaheem@gmail.com',
+  fullName: 'Naheem Uthman',
+  email: '',
   role: 'Brand Strategist',
   organization: 'BrandFlow Workspace',
 };
