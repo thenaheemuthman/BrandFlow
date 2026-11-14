@@ -1,5 +1,4 @@
 import { supabase } from '../lib/supabase';
-import type { StrategyDocument, StrategyModule, StrategyPromptTemplate } from '../types/strategy';
 import type {
   ActivityEvent,
   Brand,
@@ -74,39 +73,6 @@ export const api = {
         method: 'DELETE',
       },
     );
-  },
-
-  getStrategyPrompts(): Promise<{ prompts: StrategyPromptTemplate[] }> {
-    return requestJson('/api/ai/prompts');
-  },
-
-  testGeminiConnection(): Promise<{ ok: boolean; response: string }> {
-    return requestJson('/api/ai/test', { method: 'POST', body: JSON.stringify({}) });
-  },
-
-  getStrategyDocuments(brandId: string, module: StrategyModule): Promise<{ documents: StrategyDocument[]; approved: StrategyDocument | null }> {
-    return requestJson(`/api/brands/${encodeURIComponent(brandId)}/strategy/${module}`);
-  },
-
-  generateStrategy(brandId: string, module: StrategyModule): Promise<{ document: StrategyDocument }> {
-    return requestJson(`/api/brands/${encodeURIComponent(brandId)}/strategy/${module}/generate`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    });
-  },
-
-  saveStrategyDraft(brandId: string, module: StrategyModule, documentId: string, content: Record<string, unknown>): Promise<{ document: StrategyDocument }> {
-    return requestJson(`/api/brands/${encodeURIComponent(brandId)}/strategy/${module}/${encodeURIComponent(documentId)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ content }),
-    });
-  },
-
-  approveStrategy(brandId: string, module: StrategyModule, documentId: string): Promise<{ document: StrategyDocument }> {
-    return requestJson(`/api/brands/${encodeURIComponent(brandId)}/strategy/${module}/${encodeURIComponent(documentId)}/approve`, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    });
   },
 
   updateProfile(patch: Partial<UserProfile>): Promise<{ profile: UserProfile }> {
