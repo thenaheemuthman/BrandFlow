@@ -1,5 +1,5 @@
 import { supabase } from '../lib/supabase';
-import type { StrategyDocument, StrategyModule } from '../types/strategy';
+import type { StrategyDocument, StrategyModule, StrategyPromptTemplate } from '../types/strategy';
 import type {
   ActivityEvent,
   Brand,
@@ -74,6 +74,10 @@ export const api = {
         method: 'DELETE',
       },
     );
+  },
+
+  getStrategyPrompts(): Promise<{ prompts: StrategyPromptTemplate[] }> {
+    return requestJson('/api/ai/prompts');
   },
 
   testGeminiConnection(): Promise<{ ok: boolean; response: string }> {
