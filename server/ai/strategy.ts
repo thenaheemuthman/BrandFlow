@@ -198,6 +198,7 @@ export class StrategyService {
   }
 
   async saveDraft(brandId: string, moduleKey: StrategyModule, documentId: string, content: Record<string, unknown>): Promise<StrategyResult> {
+    validateStrategyContent(content, moduleKey);
     const existing = await this.db<any[]>(
       `brand_strategy_documents?id=eq.${encodeURIComponent(documentId)}&brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.${moduleKey}&status=eq.draft&select=*`,
     );
