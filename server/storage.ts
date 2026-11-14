@@ -16,8 +16,8 @@ const DEFAULT_USER_ID = 'user-default';
 
 const DEFAULT_PROFILE: UserProfile = {
   id: DEFAULT_USER_ID,
-  fullName: 'Uthman Aheem',
-  email: 'uthmanaheem@gmail.com',
+  fullName: 'Naheem Uthman',
+  email: '',
   role: 'Brand Strategist',
   organization: 'BrandFlow Workspace',
 };
