@@ -76,6 +76,10 @@ export const api = {
     );
   },
 
+  testGeminiConnection(): Promise<{ ok: boolean; response: string }> {
+    return requestJson('/api/ai/test', { method: 'POST', body: JSON.stringify({}) });
+  },
+
   getStrategyDocuments(brandId: string, module: StrategyModule): Promise<{ documents: StrategyDocument[]; approved: StrategyDocument | null }> {
     return requestJson(`/api/brands/${encodeURIComponent(brandId)}/strategy/${module}`);
   },
