@@ -32,6 +32,7 @@ import {
 } from '../../utils/brandLogic';
 import { UpcomingModuleState } from '../common/UpcomingModuleState';
 import { BrandFormView } from '../brands/BrandFormView';
+import { StrategyModuleView } from './StrategyModuleView';
 
 interface BrandWorkspaceViewProps {
   brand: Brand;
@@ -520,7 +521,14 @@ export function BrandWorkspaceView({
             </div>
           )}
 
-          {section !== 'overview' && section !== 'brand-settings' && (
+          {(section === 'brand-foundation' || section === 'brand-messaging') && (
+            <StrategyModuleView
+              brand={brand}
+              module={section === 'brand-foundation' ? 'brand_foundation' : 'brand_messaging'}
+            />
+          )}
+
+          {section !== 'overview' && section !== 'brand-settings' && section !== 'brand-foundation' && section !== 'brand-messaging' && (
             <UpcomingModuleState
               icon={UPCOMING_MODULE_COPY[section].icon}
               title={UPCOMING_MODULE_COPY[section].title}
