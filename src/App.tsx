@@ -20,6 +20,8 @@ import { PromptLibraryView } from './components/sections/PromptLibraryView';
 import { SettingsView } from './components/sections/SettingsView';
 import { ConfirmDialog } from './components/common/ConfirmDialog';
 import { ToastBanner, type ToastMessage } from './components/common/ToastBanner';
+import { useAuth } from './auth/AuthProvider';
+import { LoginView } from './components/auth/LoginView';
 
 const INITIAL_PROFILE: UserProfile = {
   id: 'user-default',
@@ -50,6 +52,7 @@ const SECTION_LABELS: Record<WorkspaceSection, string> = {
 };
 
 export function App() {
+  const auth = useAuth();
   const [route, setRoute] = useState<AppRoute>(() =>
     parseRoute(window.location.pathname),
   );
@@ -93,8 +96,10 @@ export function App() {
   }, [showToast]);
 
   useEffect(() => {
+    if (auth.loading || !auth.session) return;
+    setLoading(true);
     void refreshOverview();
-  }, [refreshOverview]);
+  }, [auth.loading, auth.session, refreshOverview]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -340,6 +345,11 @@ export function App() {
           onClick: () => handleNavigate({ view: 'brand-new' }),
         };
 
+  if (auth.loading) {
+    return <main className="flex min-h-screen items-center justify-center bg-white text-sm text-slate-500">Loading your private workspace…</main>;
+  }
+  if (!auth.session) return <LoginView />;
+
   return (
     <>
       <AppShell
@@ -348,6 +358,7 @@ export function App() {
         primaryAction={topBarAction}
         profile={profile}
         onNavigate={handleNavigate}
+        onSignOut={() => void auth.signOut()}
       >
         <ToastBanner toast={toast} onDismiss={() => setToast(null)} />
 
