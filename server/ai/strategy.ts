@@ -99,6 +99,22 @@ export class StrategyService {
     return text ? JSON.parse(text) as T : undefined as T;
   }
 
+  private async setModuleStatus(brandId: string, moduleKey: StrategyModule, status: 'not_started' | 'in_progress' | 'completed') {
+    const rows = await this.db<any[]>(
+      `brands?id=eq.${encodeURIComponent(brandId)}&select=module_statuses`,
+    );
+    if (!rows[0]) return;
+    const field = moduleKey === 'brand_foundation' ? 'brandFoundation' : 'brandMessaging';
+    const moduleStatuses = { ...(rows[0].module_statuses ?? {}), [field]: status };
+    if (moduleKey === 'brand_foundation' && status === 'completed') {
+      moduleStatuses.brandMessaging = 'in_progress';
+    }
+    await this.db(`brands?id=eq.${encodeURIComponent(brandId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ module_statuses: moduleStatuses, updated_at: new Date().toISOString() }),
+    });
+  }
+
   async list(brandId: string, moduleKey: StrategyModule): Promise<StrategyResult[]> {
     const rows = await this.db<any[]>(
       `brand_strategy_documents?brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.${moduleKey}&select=*&order=version.desc`,
@@ -178,6 +194,9 @@ export class StrategyService {
 
     const prior = await this.list(String(brand.id), moduleKey);
     const nextVersion = prior.reduce((max, item) => Math.max(max, item.version), 0) + 1;
+    if (!prior.some((item) => item.status === 'approved')) {
+      await this.setModuleStatus(String(brand.id), moduleKey, 'in_progress');
+    }
     // Keep the currently approved version active until a replacement draft is explicitly approved.
 
     const rows = await this.db<any[]>('brand_strategy_documents', {
@@ -233,6 +252,13 @@ export class StrategyService {
       `brand_strategy_documents?brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.${moduleKey}&status=eq.approved&id=neq.${encodeURIComponent(documentId)}`,
       { method: 'PATCH', body: JSON.stringify({ status: 'superseded' }) },
     );
+    await this.setModuleStatus(brandId, moduleKey, 'completed');
+    if (moduleKey === 'brand_foundation') {
+      await this.db(
+        `brand_strategy_documents?brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.brand_messaging&status=in.(draft,approved)`,
+        { method: 'PATCH', body: JSON.stringify({ status: 'stale', updated_at: new Date().toISOString() }) },
+      );
+    }
     return mapDocument(rows[0]);
   }
 }
