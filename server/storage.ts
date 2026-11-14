@@ -123,7 +123,7 @@ export class LocalJsonStorageRepository implements StorageRepository {
       return {
         brands: Array.isArray(parsed.brands) ? parsed.brands : [],
         activities: Array.isArray(parsed.activities) ? parsed.activities : [],
-        profile: parsed.profile ? { ...DEFAULT_PROFILE, id: this.userId, email: this.userEmail || parsed.profile.email, ...parsed.profile } : { ...DEFAULT_PROFILE, id: this.userId, email: this.userEmail || DEFAULT_PROFILE.email },
+        profile: parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile, id: this.userId, email: this.userEmail || parsed.profile.email || DEFAULT_PROFILE.email } : { ...DEFAULT_PROFILE, id: this.userId, email: this.userEmail || DEFAULT_PROFILE.email },
       };
     } catch {
       const initial: LocalDatabaseFile = {
