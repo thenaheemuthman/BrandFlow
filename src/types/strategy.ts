@@ -12,3 +12,20 @@ export interface StrategyDocument {
   updatedAt: string;
   approvedAt: string | null;
 }
+
+export interface StrategyPromptTemplate {
+  key: string;
+  name: string;
+  module: StrategyModule;
+  version: number;
+  aiRole: string;
+  requiredContext: string[];
+  inputs: string[];
+  taskInstructions: string[];
+  outputRequirements: string[];
+  qualityCriteria: string[];
+  restrictions: string[];
+  systemInstruction: string;
+  templatePreview: string;
+  reconstructed: boolean;
+}
