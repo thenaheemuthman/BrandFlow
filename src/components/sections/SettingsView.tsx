@@ -1,6 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { CheckCircle2, Database, KeyRound, User, Sparkles, LoaderCircle, CircleAlert } from 'lucide-react';
-import { api } from '../../services/api';
+import { CheckCircle2, Database, KeyRound, User } from 'lucide-react';
 import type { StorageStatus, UserProfile } from '../../types/brand';
 
 interface SettingsViewProps {
@@ -18,9 +17,6 @@ export function SettingsView({
   const [role, setRole] = useState(profile.role);
   const [organization, setOrganization] = useState(profile.organization);
   const [saving, setSaving] = useState(false);
-  const [testingGemini, setTestingGemini] = useState(false);
-  const [geminiResult, setGeminiResult] = useState('');
-  const [geminiError, setGeminiError] = useState('');
 
   // Keep the form fields in sync when the profile finishes loading from the server.
   useEffect(() => {
@@ -134,66 +130,6 @@ export function SettingsView({
             </button>
           </div>
         </form>
-      </section>
-
-      {/* Gemini AI Connection */}
-      <section className="rounded-xl border border-slate-200 bg-white p-6">
-        <div className="flex items-center gap-2.5 border-b border-slate-100 pb-4">
-          <Sparkles className="h-4 w-4 text-slate-500" strokeWidth={1.75} />
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">Gemini AI Connection</h2>
-            <p className="mt-0.5 text-xs text-slate-500">Server-side AI provider for Brand Foundation and Brand Messaging.</p>
-          </div>
-        </div>
-        <div className="mt-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-          <div>
-            <p className="text-sm font-medium text-slate-800">Google Gemini</p>
-            <p className="mt-1 text-xs text-slate-500">
-              {storage.geminiConfigured
-                ? 'API key detected on the server. Run a connection test before generating strategy.'
-                : 'API key not configured. Add GEMINI_API_KEY to your Vercel project environment variables.'}
-            </p>
-            <span className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${storage.geminiConfigured ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
-              {storage.geminiConfigured ? 'Key configured' : 'Not configured'}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={async () => {
-              setTestingGemini(true);
-              setGeminiError('');
-              setGeminiResult('');
-              try {
-                const result = await api.testGeminiConnection();
-                setGeminiResult(result.response);
-              } catch (err) {
-                setGeminiError(err instanceof Error ? err.message : 'Gemini connection test failed.');
-              } finally {
-                setTestingGemini(false);
-              }
-            }}
-            disabled={!storage.geminiConfigured || testingGemini}
-            className="inline-flex min-h-[40px] shrink-0 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {testingGemini ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            {testingGemini ? 'Testing...' : 'Test Connection'}
-          </button>
-        </div>
-        {geminiResult && (
-          <div role="status" className="mt-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>Gemini connection successful. {geminiResult}</span>
-          </div>
-        )}
-        {geminiError && (
-          <div role="alert" className="mt-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-            <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{geminiError}</span>
-          </div>
-        )}
-        <p className="mt-4 border-t border-slate-100 pt-3 text-xs leading-relaxed text-slate-500">
-          Keep this key in Vercel as a server-only environment variable. Do not add it to a VITE_ variable or paste it into browser code.
-        </p>
       </section>
 
       {/* Data Persistence & Supabase Integration Readiness */}
