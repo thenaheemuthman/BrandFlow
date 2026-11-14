@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import type { StrategyDocument, StrategyModule } from '../types/strategy';
 import type {
   ActivityEvent,
   Brand,
