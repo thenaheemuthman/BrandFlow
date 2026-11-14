@@ -6,6 +6,7 @@ import {
 import type { BrandFormInput, UserProfile } from '../src/types/brand.ts';
 import { getGeminiConnectionStatus, testGeminiConnection } from './ai/gemini.ts';
 import { StrategyService, type StrategyModule } from './ai/strategy.ts';
+import { strategyPrompts } from './ai/prompts.ts';
 
 interface AuthenticatedRequest extends Request {
   authenticatedUser?: { id: string; email: string };
@@ -83,6 +84,44 @@ export function createApiApp() {
   });
 
   app.use('/api', requireOwner);
+
+  app.get('/api/ai/prompts', (_req, res) => {
+    const foundationExample = {
+      brandName: '[Brand name]',
+      businessDescription: '[Business description]',
+      industry: '[Industry]',
+      productsOrServices: '[Products or services]',
+      targetMarket: '[Target market]',
+      primaryLocation: '[Primary location]',
+    };
+    const approvedFoundationExample = {
+      brandPurpose: '[Approved purpose]',
+      mission: '[Approved mission]',
+      vision: '[Approved vision]',
+      coreValues: '[Approved values]',
+      brandPromise: '[Approved promise]',
+      positioningStatement: '[Approved positioning]',
+    };
+    const prompts = Object.values(strategyPrompts).map((prompt) => ({
+      key: prompt.key,
+      name: prompt.name,
+      module: prompt.module,
+      version: prompt.version,
+      aiRole: prompt.aiRole,
+      requiredContext: prompt.requiredContext,
+      inputs: prompt.inputs,
+      taskInstructions: prompt.taskInstructions,
+      outputRequirements: prompt.outputRequirements,
+      qualityCriteria: prompt.qualityCriteria,
+      restrictions: prompt.restrictions,
+      systemInstruction: prompt.systemInstruction,
+      templatePreview: prompt.module === 'brand_foundation'
+        ? prompt.build(foundationExample)
+        : prompt.build(foundationExample, approvedFoundationExample),
+      reconstructed: prompt.reconstructed,
+    }));
+    res.json({ prompts });
+  });
 
   app.get('/api/ai/status', (_req, res) => {
     res.json(getGeminiConnectionStatus());
