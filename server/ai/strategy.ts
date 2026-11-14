@@ -23,6 +23,27 @@ function assertBrandContext(brand: Record<string, unknown>) {
   }
 }
 
+const requiredStringFields: Record<StrategyModule, string[]> = {
+  brand_foundation: ['strategicSummary', 'brandPurpose', 'mission', 'vision', 'brandPromise', 'differentiation', 'positioningStatement'],
+  brand_messaging: ['messagingStrategy', 'primaryValueProposition', 'elevatorPitch'],
+};
+
+const requiredArrayFields: Record<StrategyModule, string[]> = {
+  brand_foundation: ['coreValues', 'strategicPillars', 'assumptions', 'missingInformation', 'evidenceNotes'],
+  brand_messaging: ['supportingMessages', 'brandVoice', 'toneGuidelines', 'taglineOptions', 'proofRequirements', 'assumptions', 'missingInformation'],
+};
+
+function validateStrategyContent(value: Record<string, unknown>, moduleKey: StrategyModule) {
+  const missing = [...requiredStringFields[moduleKey], ...requiredArrayFields[moduleKey]]
+    .filter((key) => !(key in value));
+  if (missing.length) throw new Error(`The generated ${moduleKey.replace('_', ' ')} is missing required fields: ${missing.join(', ')}.`);
+  const invalidStrings = requiredStringFields[moduleKey].filter((key) => typeof value[key] !== 'string');
+  const invalidArrays = requiredArrayFields[moduleKey].filter((key) => !Array.isArray(value[key]));
+  if (invalidStrings.length || invalidArrays.length) {
+    throw new Error('The strategy output did not match the required structure. Please regenerate.');
+  }
+}
+
 function parseGeneratedJson(text: string): Record<string, unknown> {
   const cleaned = text.trim().replace(/^\x60\x60\x60(?:json)?\s*/i, '').replace(/\s*\x60\x60\x60$/i, '');
   const parsed: unknown = JSON.parse(cleaned);
@@ -117,6 +138,7 @@ export class StrategyService {
       const text = response.text?.trim();
       if (!text) throw new Error('Gemini returned an empty response.');
       output = parseGeneratedJson(text);
+      validateStrategyContent(output, moduleKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Gemini generation failed.';
       await this.db('brand_ai_generations', {
@@ -197,10 +219,6 @@ export class StrategyService {
       `brand_strategy_documents?id=eq.${encodeURIComponent(documentId)}&brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.${moduleKey}&status=eq.draft&select=*`,
     );
     if (!current[0]) throw new Error('Only a draft can be approved.');
-    await this.db(
-      `brand_strategy_documents?brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.${moduleKey}&status=eq.approved`,
-      { method: 'PATCH', body: JSON.stringify({ status: 'superseded' }) },
-    );
     const rows = await this.db<any[]>(
       `brand_strategy_documents?id=eq.${encodeURIComponent(documentId)}&brand_id=eq.${encodeURIComponent(brandId)}`,
       {
@@ -210,6 +228,10 @@ export class StrategyService {
       },
     );
     if (!rows[0]) throw new Error('The draft could not be approved.');
+    await this.db(
+      `brand_strategy_documents?brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.${moduleKey}&status=eq.approved&id=neq.${encodeURIComponent(documentId)}`,
+      { method: 'PATCH', body: JSON.stringify({ status: 'superseded' }) },
+    );
     return mapDocument(rows[0]);
   }
 }
