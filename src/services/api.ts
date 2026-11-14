@@ -1,3 +1,4 @@
+import { supabase } from '../lib/supabase';
 import type {
   ActivityEvent,
   Brand,
@@ -7,10 +8,13 @@ import type {
 } from '../types/brand';
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) throw new Error('Please sign in to continue.');
   const response = await fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.access_token}`,
       ...(options?.headers ?? {}),
     },
   });
