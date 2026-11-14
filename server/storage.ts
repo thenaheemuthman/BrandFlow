@@ -613,7 +613,7 @@ export class SupabaseStorageRepository implements StorageRepository {
         role: string;
         organization: string;
       }>
-    >(`workspace_profiles?id=eq.${DEFAULT_USER_ID}&select=*`);
+    >(`workspace_profiles?id=eq.${this.userId}&select=*`);
     if (!rows[0]) {
       const profile = { ...DEFAULT_PROFILE, id: this.userId, email: this.userEmail || DEFAULT_PROFILE.email };
       await this.request('workspace_profiles', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ id: profile.id, full_name: profile.fullName, email: profile.email, role: profile.role, organization: profile.organization }) });
@@ -674,11 +674,6 @@ export function getEnvironmentStorageStatus(
         key: 'SUPABASE_URL',
         configured: hasUrl,
         purpose: 'Project REST & PostgreSQL endpoint for Supabase persistence',
-      },
-      {
-        key: 'SUPABASE_ANON_KEY',
-        configured: hasAnon,
-        purpose: 'Client-side Supabase Auth key for future multi-user authentication',
       },
       {
         key: 'SUPABASE_ANON_KEY',
