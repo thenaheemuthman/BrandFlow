@@ -222,7 +222,7 @@ export class LocalJsonStorageRepository implements StorageRepository {
       const now = new Date().toISOString();
       const brand: Brand = {
         id: crypto.randomUUID(),
-        userId: DEFAULT_USER_ID,
+        userId: this.userId,
         brandName: clean.brandName,
         businessDescription: clean.businessDescription,
         industry: clean.industry,
@@ -658,7 +658,7 @@ export function getEnvironmentStorageStatus(
 ): StorageStatus {
   const hasUrl = Boolean(process.env.SUPABASE_URL?.trim());
   const hasAnon = Boolean(process.env.SUPABASE_ANON_KEY?.trim());
-  const hasService = Boolean(process.env.SUPABASE_ANON_KEY?.trim());
+  const hasAnon = Boolean(process.env.SUPABASE_ANON_KEY?.trim());
   const hasGemini = Boolean(
     process.env.GEMINI_API_KEY?.trim() &&
       process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY',
@@ -667,7 +667,7 @@ export function getEnvironmentStorageStatus(
   return {
     mode,
     persisted: mode === 'supabase' || !Boolean(process.env.VERCEL),
-    supabaseConfigured: hasUrl && hasService,
+    supabaseConfigured: hasUrl && hasAnon,
     geminiConfigured: hasGemini,
     requiredEnvVars: [
       {
@@ -677,7 +677,7 @@ export function getEnvironmentStorageStatus(
       },
       {
         key: 'SUPABASE_ANON_KEY',
-        configured: hasService,
+        configured: hasAnon,
         purpose: 'Public Supabase key used with the signed-in user token and database row security',
       },
       {
