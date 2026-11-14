@@ -1,5 +1,5 @@
 export type StrategyModule = 'brand_foundation' | 'brand_messaging';
-export type StrategyDocumentStatus = 'draft' | 'approved' | 'rejected' | 'superseded';
+export type StrategyDocumentStatus = 'draft' | 'approved' | 'rejected' | 'superseded' | 'stale';
 
 export interface StrategyDocument {
   id: string;
