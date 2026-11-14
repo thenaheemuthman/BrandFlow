@@ -16,8 +16,8 @@ const DEFAULT_USER_ID = 'user-default';
 
 const DEFAULT_PROFILE: UserProfile = {
   id: DEFAULT_USER_ID,
-  fullName: 'Uthman Aheem',
-  email: 'uthmanaheem@gmail.com',
+  fullName: 'Naheem Uthman',
+  email: '',
   role: 'Brand Strategist',
   organization: 'BrandFlow Workspace',
 };
@@ -99,13 +99,16 @@ interface LocalDatabaseFile {
 
 export class LocalJsonStorageRepository implements StorageRepository {
   private readonly filePath: string;
+  private readonly userId: string;
+  private readonly userEmail: string;
   private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(
-    dataDir = process.env.VERCEL
+  constructor(userId = DEFAULT_USER_ID, userEmail = '', dataDir = process.env.VERCEL
       ? path.join(os.tmpdir(), 'brandflow-data')
       : path.resolve(process.cwd(), '.data'),
   ) {
+    this.userId = userId;
+    this.userEmail = userEmail;
     this.filePath = path.join(dataDir, 'brandflow-db.json');
   }
 
@@ -120,13 +123,13 @@ export class LocalJsonStorageRepository implements StorageRepository {
       return {
         brands: Array.isArray(parsed.brands) ? parsed.brands : [],
         activities: Array.isArray(parsed.activities) ? parsed.activities : [],
-        profile: parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile } : { ...DEFAULT_PROFILE },
+        profile: parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile, id: this.userId, email: this.userEmail || parsed.profile.email || DEFAULT_PROFILE.email } : { ...DEFAULT_PROFILE, id: this.userId, email: this.userEmail || DEFAULT_PROFILE.email },
       };
     } catch {
       const initial: LocalDatabaseFile = {
         brands: [],
         activities: [],
-        profile: { ...DEFAULT_PROFILE },
+        profile: { ...DEFAULT_PROFILE, id: this.userId, email: this.userEmail || DEFAULT_PROFILE.email },
       };
       await this.writeDb(initial);
       return initial;
@@ -158,7 +161,7 @@ export class LocalJsonStorageRepository implements StorageRepository {
   ): ActivityEvent {
     return {
       id: crypto.randomUUID(),
-      userId: DEFAULT_USER_ID,
+      userId: this.userId,
       brandId,
       brandName,
       type,
@@ -219,7 +222,7 @@ export class LocalJsonStorageRepository implements StorageRepository {
       const now = new Date().toISOString();
       const brand: Brand = {
         id: crypto.randomUUID(),
-        userId: DEFAULT_USER_ID,
+        userId: this.userId,
         brandName: clean.brandName,
         businessDescription: clean.businessDescription,
         industry: clean.industry,
@@ -404,11 +407,17 @@ function mapSupabaseRowToBrand(row: SupabaseBrandRow): Brand {
 
 export class SupabaseStorageRepository implements StorageRepository {
   private readonly baseUrl: string;
-  private readonly serviceKey: string;
+  private readonly anonKey: string;
+  private readonly accessToken: string;
+  private readonly userId: string;
+  private readonly userEmail: string;
 
-  constructor(supabaseUrl: string, serviceKey: string) {
+  constructor(supabaseUrl: string, anonKey: string, accessToken: string, userId: string, userEmail: string) {
     this.baseUrl = supabaseUrl.replace(/\/+$/, '');
-    this.serviceKey = serviceKey;
+    this.anonKey = anonKey;
+    this.accessToken = accessToken;
+    this.userId = userId;
+    this.userEmail = userEmail;
   }
 
   getStorageStatus(): StorageStatus {
@@ -422,8 +431,8 @@ export class SupabaseStorageRepository implements StorageRepository {
     const res = await fetch(`${this.baseUrl}/rest/v1/${tablePath}`, {
       ...options,
       headers: {
-        apikey: this.serviceKey,
-        Authorization: `Bearer ${this.serviceKey}`,
+        apikey: this.anonKey,
+        Authorization: `Bearer ${this.accessToken}`,
         'Content-Type': 'application/json',
         ...(options.headers ?? {}),
       },
@@ -460,7 +469,7 @@ export class SupabaseStorageRepository implements StorageRepository {
       await this.request('brand_activities', {
         method: 'POST',
         body: JSON.stringify({
-          user_id: DEFAULT_USER_ID,
+          user_id: this.userId,
           brand_id: row.id,
           brand_name: row.brand_name,
           type: 'workspace_accessed',
@@ -479,7 +488,7 @@ export class SupabaseStorageRepository implements StorageRepository {
       method: 'POST',
       headers: { Prefer: 'return=representation' },
       body: JSON.stringify({
-        user_id: DEFAULT_USER_ID,
+        user_id: this.userId,
         brand_name: clean.brandName,
         business_description: clean.businessDescription,
         industry: clean.industry,
@@ -501,7 +510,7 @@ export class SupabaseStorageRepository implements StorageRepository {
     await this.request('brand_activities', {
       method: 'POST',
       body: JSON.stringify({
-        user_id: DEFAULT_USER_ID,
+        user_id: this.userId,
         brand_id: created.id,
         brand_name: created.brandName,
         type: 'brand_created',
@@ -542,7 +551,7 @@ export class SupabaseStorageRepository implements StorageRepository {
     await this.request('brand_activities', {
       method: 'POST',
       body: JSON.stringify({
-        user_id: DEFAULT_USER_ID,
+        user_id: this.userId,
         brand_id: updated.id,
         brand_name: updated.brandName,
         type: 'brand_updated',
@@ -561,7 +570,7 @@ export class SupabaseStorageRepository implements StorageRepository {
     await this.request('brand_activities', {
       method: 'POST',
       body: JSON.stringify({
-        user_id: DEFAULT_USER_ID,
+        user_id: this.userId,
         brand_id: null,
         brand_name: existing.brandName,
         type: 'brand_deleted',
@@ -604,8 +613,12 @@ export class SupabaseStorageRepository implements StorageRepository {
         role: string;
         organization: string;
       }>
-    >(`workspace_profiles?id=eq.${DEFAULT_USER_ID}&select=*`);
-    if (!rows[0]) return { ...DEFAULT_PROFILE };
+    >(`workspace_profiles?id=eq.${this.userId}&select=*`);
+    if (!rows[0]) {
+      const profile = { ...DEFAULT_PROFILE, id: this.userId, email: this.userEmail || DEFAULT_PROFILE.email };
+      await this.request('workspace_profiles', { method: 'POST', headers: { Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ id: profile.id, full_name: profile.fullName, email: profile.email, role: profile.role, organization: profile.organization }) });
+      return profile;
+    }
     return {
       id: rows[0].id,
       fullName: rows[0].full_name,
@@ -645,7 +658,6 @@ export function getEnvironmentStorageStatus(
 ): StorageStatus {
   const hasUrl = Boolean(process.env.SUPABASE_URL?.trim());
   const hasAnon = Boolean(process.env.SUPABASE_ANON_KEY?.trim());
-  const hasService = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim());
   const hasGemini = Boolean(
     process.env.GEMINI_API_KEY?.trim() &&
       process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY',
@@ -654,7 +666,7 @@ export function getEnvironmentStorageStatus(
   return {
     mode,
     persisted: mode === 'supabase' || !Boolean(process.env.VERCEL),
-    supabaseConfigured: hasUrl && hasService,
+    supabaseConfigured: hasUrl && hasAnon,
     geminiConfigured: hasGemini,
     requiredEnvVars: [
       {
@@ -665,12 +677,7 @@ export function getEnvironmentStorageStatus(
       {
         key: 'SUPABASE_ANON_KEY',
         configured: hasAnon,
-        purpose: 'Client-side Supabase Auth key for future multi-user authentication',
-      },
-      {
-        key: 'SUPABASE_SERVICE_ROLE_KEY',
-        configured: hasService,
-        purpose: 'Server-side database access key (never exposed to browser)',
+        purpose: 'Public Supabase key used with the signed-in user token and database row security',
       },
       {
         key: 'GEMINI_API_KEY',
@@ -681,12 +688,14 @@ export function getEnvironmentStorageStatus(
   };
 }
 
-export function createStorageRepository(): StorageRepository {
+export function createStorageRepository(userId: string, accessToken: string, userEmail: string): StorageRepository {
   const supabaseUrl = process.env.SUPABASE_URL?.trim();
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-
-  if (supabaseUrl && serviceKey) {
-    return new SupabaseStorageRepository(supabaseUrl, serviceKey);
+  const anonKey = process.env.SUPABASE_ANON_KEY?.trim();
+  if (supabaseUrl && anonKey && accessToken) {
+    return new SupabaseStorageRepository(supabaseUrl, anonKey, accessToken, userId, userEmail);
   }
-  return new LocalJsonStorageRepository();
+  if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
+    throw new Error('Cloud storage is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY.');
+  }
+  return new LocalJsonStorageRepository(userId, userEmail);
 }

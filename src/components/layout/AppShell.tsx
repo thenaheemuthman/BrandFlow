@@ -46,6 +46,7 @@ interface AppShellProps {
   };
   profile: UserProfile;
   onNavigate: (route: AppRoute) => void;
+  onSignOut: () => void;
   children: ReactNode;
 }
 
@@ -82,6 +83,7 @@ export function AppShell({
   primaryAction,
   profile,
   onNavigate,
+  onSignOut,
   children,
 }: AppShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -168,6 +170,9 @@ export function AppShell({
               {profile.email}
             </span>
           </span>
+        </button>
+        <button type="button" onClick={onSignOut} className="mt-2 w-full rounded-lg px-3 py-2 text-left text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-900">
+          Sign out
         </button>
       </div>
     </div>
