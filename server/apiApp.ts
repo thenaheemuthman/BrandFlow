@@ -5,8 +5,6 @@ import {
 } from './storage.ts';
 import type { BrandFormInput, UserProfile } from '../src/types/brand.ts';
 
-const OWNER_USER_ID = '191c1bc7-4943-4ecd-a7e8-bf574d5d4ed5';
-
 interface AuthenticatedRequest extends Request {
   authenticatedUser?: { id: string; email: string };
   accessToken?: string;
@@ -23,8 +21,9 @@ async function requireOwner(req: Request, res: Response, next: NextFunction) {
 
   const supabaseUrl = process.env.SUPABASE_URL?.trim();
   const anonKey = process.env.SUPABASE_ANON_KEY?.trim();
-  if (!supabaseUrl || !anonKey) {
-    res.status(503).json({ error: 'Authentication is not configured on the server.' });
+  const ownerUserId = process.env.BRANDFLOW_OWNER_USER_ID?.trim();
+  if (!supabaseUrl || !anonKey || !ownerUserId) {
+    res.status(503).json({ error: 'Authentication is not fully configured on the server.' });
     return;
   }
 
@@ -37,7 +36,7 @@ async function requireOwner(req: Request, res: Response, next: NextFunction) {
       return;
     }
     const user = await response.json() as { id?: string; email?: string };
-    if (!user.id || user.id !== OWNER_USER_ID) {
+    if (!user.id || user.id !== ownerUserId) {
       res.status(403).json({ error: 'This account is not authorised to access this private workspace.' });
       return;
     }
