@@ -4,6 +4,7 @@ import {
   validateServerBrandInput,
 } from './storage.ts';
 import type { BrandFormInput, UserProfile } from '../src/types/brand.ts';
+import { getGeminiConnectionStatus, testGeminiConnection } from './ai/gemini.ts';
 
 interface AuthenticatedRequest extends Request {
   authenticatedUser?: { id: string; email: string };
@@ -63,6 +64,21 @@ export function createApiApp() {
   });
 
   app.use('/api', requireOwner);
+
+  app.get('/api/ai/status', (_req, res) => {
+    res.json(getGeminiConnectionStatus());
+  });
+
+  app.post('/api/ai/test', async (_req, res) => {
+    try {
+      const response = await testGeminiConnection();
+      res.json({ ok: true, response });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Gemini connection test failed.';
+      const status = message.includes('not configured') ? 503 : 502;
+      res.status(status).json({ error: message });
+    }
+  });
 
   app.get('/api/workspace/overview', async (req, res) => {
     try {
