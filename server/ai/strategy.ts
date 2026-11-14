@@ -24,22 +24,28 @@ function assertBrandContext(brand: Record<string, unknown>) {
 }
 
 const requiredStringFields: Record<StrategyModule, string[]> = {
-  brand_foundation: ['strategicSummary', 'brandPurpose', 'mission', 'vision', 'brandPromise', 'differentiation', 'positioningStatement'],
-  brand_messaging: ['messagingStrategy', 'primaryValueProposition', 'elevatorPitch'],
+  brand_foundation: ['strategicSummary', 'brandPurpose', 'mission', 'vision', 'brandPromise', 'brandBelief', 'brandManifesto', 'differentiation', 'positioningStatement'],
+  brand_messaging: ['positioningStatement', 'valueProposition', 'uniqueSellingProposition', 'elevatorPitch', 'brandIntroduction'],
 };
 
 const requiredArrayFields: Record<StrategyModule, string[]> = {
-  brand_foundation: ['coreValues', 'strategicPillars', 'assumptions', 'missingInformation', 'evidenceNotes'],
-  brand_messaging: ['supportingMessages', 'brandVoice', 'toneGuidelines', 'taglineOptions', 'proofRequirements', 'assumptions', 'missingInformation'],
+  brand_foundation: ['coreValues', 'brandPersonality', 'assumptions', 'missingInformation', 'evidenceNotes'],
+  brand_messaging: ['taglineOptions', 'coreMessaging', 'sellingPoints', 'brandVoice', 'assumptions', 'missingInformation', 'proofRequirements'],
+};
+
+const requiredObjectFields: Record<StrategyModule, string[]> = {
+  brand_foundation: [],
+  brand_messaging: ['messagingFramework'],
 };
 
 function validateStrategyContent(value: Record<string, unknown>, moduleKey: StrategyModule) {
-  const missing = [...requiredStringFields[moduleKey], ...requiredArrayFields[moduleKey]]
+  const missing = [...requiredStringFields[moduleKey], ...requiredArrayFields[moduleKey], ...requiredObjectFields[moduleKey]]
     .filter((key) => !(key in value));
   if (missing.length) throw new Error(`The generated ${moduleKey.replace('_', ' ')} is missing required fields: ${missing.join(', ')}.`);
   const invalidStrings = requiredStringFields[moduleKey].filter((key) => typeof value[key] !== 'string');
   const invalidArrays = requiredArrayFields[moduleKey].filter((key) => !Array.isArray(value[key]));
-  if (invalidStrings.length || invalidArrays.length) {
+  const invalidObjects = requiredObjectFields[moduleKey].filter((key) => !value[key] || typeof value[key] !== 'object' || Array.isArray(value[key]));
+  if (invalidStrings.length || invalidArrays.length || invalidObjects.length) {
     throw new Error('The strategy output did not match the required structure. Please regenerate.');
   }
 }
