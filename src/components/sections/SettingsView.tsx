@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { CheckCircle2, Database, KeyRound, User } from 'lucide-react';
 import type { StorageStatus, UserProfile } from '../../types/brand';
 
@@ -17,6 +17,13 @@ export function SettingsView({
   const [role, setRole] = useState(profile.role);
   const [organization, setOrganization] = useState(profile.organization);
   const [saving, setSaving] = useState(false);
+
+  // Keep the form fields in sync when the profile finishes loading from the server.
+  useEffect(() => {
+    setFullName(profile.fullName);
+    setRole(profile.role);
+    setOrganization(profile.organization);
+  }, [profile.fullName, profile.role, profile.organization]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
