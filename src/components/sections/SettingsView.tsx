@@ -139,8 +139,10 @@ export function SettingsView({
         <div className="mt-4 space-y-4 text-sm text-slate-600">
           <p className="leading-relaxed">
             {storage.mode === 'supabase'
-              ? 'Connected to Supabase PostgreSQL via server-side credentials. All brands and workspace activities are stored in PostgreSQL.'
-              : 'Currently persisting brands, profile preferences, and activity logs to server-side file storage (.data/brandflow-db.json). To switch to Supabase PostgreSQL, configure the server environment variables below and apply the SQL schema in supabase/schema.sql.'}
+              ? 'Connected to Supabase PostgreSQL via server-side credentials. All brands and workspace activities are stored permanently in PostgreSQL.'
+              : storage.persisted
+                ? 'Currently persisting brands, profile preferences, and activity logs to server-side file storage (.data/brandflow-db.json). To switch to Supabase PostgreSQL, configure the server environment variables below and apply the SQL schema in supabase/schema.sql.'
+                : 'Running in serverless mode without Supabase credentials; temporary /tmp storage is active and resets across serverless cold starts. Add the Supabase environment variables below in your hosting dashboard and apply supabase/schema.sql for permanent PostgreSQL persistence.'}
           </p>
 
           <div className="border-t border-slate-100 pt-4">

@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type {
@@ -100,7 +101,11 @@ export class LocalJsonStorageRepository implements StorageRepository {
   private readonly filePath: string;
   private writeQueue: Promise<void> = Promise.resolve();
 
-  constructor(dataDir = path.resolve(process.cwd(), '.data')) {
+  constructor(
+    dataDir = process.env.VERCEL
+      ? path.join(os.tmpdir(), 'brandflow-data')
+      : path.resolve(process.cwd(), '.data'),
+  ) {
     this.filePath = path.join(dataDir, 'brandflow-db.json');
   }
 
@@ -648,7 +653,7 @@ export function getEnvironmentStorageStatus(
 
   return {
     mode,
-    persisted: true,
+    persisted: mode === 'supabase' || !Boolean(process.env.VERCEL),
     supabaseConfigured: hasUrl && hasService,
     geminiConfigured: hasGemini,
     requiredEnvVars: [
