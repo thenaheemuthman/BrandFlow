@@ -1,4 +1,6 @@
 import type {
+  AiGenerateRequest,
+  AiGenerateResponse,
   Brand,
   BrandStrategyModule,
   ModuleStatus,
@@ -29,6 +31,78 @@ export interface TrackedTestRecord {
 
 export const PREFERRED_VERIFY_BRAND_NAME = 'The Naheem Uthman';
 export const TARGET_TEST_MODULE_KEY: Phase2AModuleKey = 'brandFoundation';
+export const GEMINI_SMOKE_TEST_MODEL = 'gemini-4-hydrogen' as const;
+
+export const GEMINI_SMOKE_TEST_REQUEST: AiGenerateRequest = {
+  prompt:
+    'Reply with exactly this sentence and nothing else: BrandFlow AI Gemini integration is working.',
+  model: GEMINI_SMOKE_TEST_MODEL,
+};
+
+export interface GeminiSmokeTestResult {
+  status: CrudStepStatus;
+  model: string | null;
+  generatedAt: string | null;
+  text: string | null;
+  error: string | null;
+  checkedAt: string | null;
+}
+
+export function createInitialGeminiSmokeTestResult(): GeminiSmokeTestResult {
+  return {
+    status: 'PENDING',
+    model: null,
+    generatedAt: null,
+    text: null,
+    error: null,
+    checkedAt: null,
+  };
+}
+
+export function evaluateGeminiSmokeTestResponse(
+  response: AiGenerateResponse,
+  checkedAt: string | null = null,
+): GeminiSmokeTestResult {
+  const text = typeof response?.text === 'string' ? response.text.trim() : '';
+  const model = typeof response?.model === 'string' && response.model.trim()
+    ? response.model.trim()
+    : null;
+  const generatedAt =
+    typeof response?.generatedAt === 'string' && response.generatedAt.trim()
+      ? response.generatedAt.trim()
+      : null;
+
+  if (!text) {
+    return {
+      status: 'FAIL',
+      model,
+      generatedAt,
+      text: null,
+      error: 'Gemini returned an empty response.',
+      checkedAt,
+    };
+  }
+
+  if (model !== GEMINI_SMOKE_TEST_MODEL) {
+    return {
+      status: 'FAIL',
+      model,
+      generatedAt,
+      text,
+      error: `Expected model "${GEMINI_SMOKE_TEST_MODEL}" but received "${model ?? 'none'}".`,
+      checkedAt,
+    };
+  }
+
+  return {
+    status: 'PASS',
+    model,
+    generatedAt,
+    text,
+    error: null,
+    checkedAt,
+  };
+}
 
 export function createInitialStepReport(): Record<CrudStepKey, CrudStepResult> {
   return {
@@ -191,9 +265,11 @@ export function sanitizeModuleDisplay(module: BrandStrategyModule): Record<strin
 
 export function sanitizeErrorMessage(err: unknown): string {
   const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Unexpected error.';
-  const trimmed = raw.trim() || 'Request failed.';
-  const redacted = trimmed
+  const firstLine = raw.split(/\r?\n/)[0]?.trim() || 'Request failed.';
+  const redacted = firstLine
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [redacted]')
-    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[redacted-token]');
+    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[redacted-token]')
+    .replace(/AIza[0-9A-Za-z_-]{10,}/g, '[redacted-key]')
+    .replace(/([?&]key=)[^&\s]+/gi, '$1[redacted-key]');
   return redacted.length > 260 ? `${redacted.slice(0, 257)}...` : redacted;
 }

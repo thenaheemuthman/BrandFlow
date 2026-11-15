@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  GEMINI_SMOKE_TEST_MODEL,
+  GEMINI_SMOKE_TEST_REQUEST,
   buildInitialTestModuleInput,
   buildUpdatedTestModuleInput,
+  createInitialGeminiSmokeTestResult,
   createInitialStepReport,
+  evaluateGeminiSmokeTestResponse,
   findExistingBrandFoundationModule,
   isConfirmedVerificationTestRecord,
   pickDefaultVerifyBrandId,
@@ -153,12 +157,62 @@ test('verifyTrackedModuleOwnership and isConfirmedVerificationTestRecord prevent
   );
 });
 
-test('sanitizeErrorMessage redacts accidental bearer or JWT tokens', () => {
+test('sanitizeErrorMessage redacts tokens, Gemini API keys, and strips stack traces', () => {
   const message = sanitizeErrorMessage(
-    new Error('Failed with Bearer abc.def.ghi and eyJheader.eyJpayload.signature'),
+    new Error(
+      'Failed with Bearer abc.def.ghi, eyJheader.eyJpayload.signature, AIzaSyFakeKeyValue12345, and ?key=secret123\n    at internalFn (server.ts:10:2)',
+    ),
   );
   assert.equal(message.includes('abc.def.ghi'), false);
   assert.equal(message.includes('eyJpayload'), false);
+  assert.equal(message.includes('AIzaSyFakeKeyValue12345'), false);
+  assert.equal(message.includes('secret123'), false);
+  assert.equal(message.includes('internalFn'), false);
   assert.equal(message.includes('[redacted]'), true);
   assert.equal(message.includes('[redacted-token]'), true);
+  assert.equal(message.includes('[redacted-key]'), true);
+});
+
+test('GEMINI_SMOKE_TEST_REQUEST uses exact prompt and gemini-4-hydrogen without brand context', () => {
+  assert.deepEqual(GEMINI_SMOKE_TEST_REQUEST, {
+    prompt:
+      'Reply with exactly this sentence and nothing else: BrandFlow AI Gemini integration is working.',
+    model: 'gemini-4-hydrogen',
+  });
+  assert.equal('context' in GEMINI_SMOKE_TEST_REQUEST, false);
+});
+
+test('evaluateGeminiSmokeTestResponse enforces non-empty text and exact gemini-4-hydrogen model', () => {
+  const initial = createInitialGeminiSmokeTestResult();
+  assert.equal(initial.status, 'PENDING');
+
+  const pass = evaluateGeminiSmokeTestResponse(
+    {
+      text: '  BrandFlow AI Gemini integration is working.  ',
+      model: GEMINI_SMOKE_TEST_MODEL,
+      generatedAt: '2026-11-15T15:45:00.000Z',
+    },
+    '03:45:00 PM',
+  );
+  assert.equal(pass.status, 'PASS');
+  assert.equal(pass.text, 'BrandFlow AI Gemini integration is working.');
+  assert.equal(pass.model, 'gemini-4-hydrogen');
+  assert.equal(pass.generatedAt, '2026-11-15T15:45:00.000Z');
+  assert.equal(pass.error, null);
+
+  const emptyFail = evaluateGeminiSmokeTestResponse({
+    text: '   ',
+    model: GEMINI_SMOKE_TEST_MODEL,
+    generatedAt: '2026-11-15T15:45:00.000Z',
+  });
+  assert.equal(emptyFail.status, 'FAIL');
+  assert.match(emptyFail.error ?? '', /empty/i);
+
+  const wrongModelFail = evaluateGeminiSmokeTestResponse({
+    text: 'BrandFlow AI Gemini integration is working.',
+    model: 'gemini-3.1-flash-lite',
+    generatedAt: '2026-11-15T15:45:00.000Z',
+  });
+  assert.equal(wrongModelFail.status, 'FAIL');
+  assert.match(wrongModelFail.error ?? '', /gemini-4-hydrogen/);
 });

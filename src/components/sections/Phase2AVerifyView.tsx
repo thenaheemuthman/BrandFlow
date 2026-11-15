@@ -8,6 +8,7 @@ import {
   Play,
   RefreshCw,
   ShieldAlert,
+  Sparkles,
   Trash2,
   XCircle,
 } from 'lucide-react';
@@ -15,10 +16,13 @@ import { api } from '../../services/api';
 import type { Brand, BrandStrategyModule } from '../../types/brand';
 import type { AppRoute } from '../../utils/router';
 import {
+  GEMINI_SMOKE_TEST_REQUEST,
   TARGET_TEST_MODULE_KEY,
   buildInitialTestModuleInput,
   buildUpdatedTestModuleInput,
+  createInitialGeminiSmokeTestResult,
   createInitialStepReport,
+  evaluateGeminiSmokeTestResponse,
   findExistingBrandFoundationModule,
   isConfirmedVerificationTestRecord,
   pickDefaultVerifyBrandId,
@@ -28,6 +32,7 @@ import {
   verifyTrackedModuleOwnership,
   type CrudStepKey,
   type CrudStepResult,
+  type GeminiSmokeTestResult,
   type TrackedTestRecord,
 } from '../../utils/phase2aVerifyLogic';
 
@@ -101,8 +106,13 @@ export function Phase2AVerifyView({
     tone: 'info' | 'warning' | 'error' | 'success';
     text: string;
   } | null>(null);
+  const [geminiResult, setGeminiResult] = useState<GeminiSmokeTestResult>(() =>
+    createInitialGeminiSmokeTestResult(),
+  );
+  const [geminiRunning, setGeminiRunning] = useState(false);
 
   const runningRef = useRef(false);
+  const geminiRunningRef = useRef(false);
 
   useEffect(() => {
     if (brands.length === 0) return;
@@ -542,6 +552,37 @@ export function Phase2AVerifyView({
     });
   };
 
+  const handleRunGeminiTest = async () => {
+    if (geminiRunningRef.current) return;
+    geminiRunningRef.current = true;
+    setGeminiRunning(true);
+    setGeminiResult({
+      status: 'RUNNING',
+      model: null,
+      generatedAt: null,
+      text: null,
+      error: null,
+      checkedAt: nowTimestamp(),
+    });
+
+    try {
+      const response = await api.generateAiContent(GEMINI_SMOKE_TEST_REQUEST);
+      setGeminiResult(evaluateGeminiSmokeTestResponse(response, nowTimestamp()));
+    } catch (err) {
+      setGeminiResult({
+        status: 'FAIL',
+        model: null,
+        generatedAt: null,
+        text: null,
+        error: sanitizeErrorMessage(err),
+        checkedAt: nowTimestamp(),
+      });
+    } finally {
+      geminiRunningRef.current = false;
+      setGeminiRunning(false);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -799,6 +840,125 @@ export function Phase2AVerifyView({
           </pre>
         </section>
       )}
+
+      {/* Temporary Gemini API Integration Smoke Test */}
+      <section
+        aria-label="Gemini API Integration Test"
+        className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6"
+      >
+        <div className="flex flex-col justify-between gap-4 border-b border-slate-100 pb-4 sm:flex-row sm:items-center">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 shrink-0 text-blue-600" strokeWidth={1.75} />
+              <h2 className="text-base font-semibold text-slate-900">
+                Gemini API Integration Test
+              </h2>
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-slate-600">
+              Sends a single real Gemini API request via{' '}
+              <code className="rounded bg-slate-100 px-1 py-0.5 font-mono text-[11px] text-slate-800">
+                POST /api/ai/generate
+              </code>{' '}
+              using your owner session. Nothing is saved to Supabase or any brand workspace.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void handleRunGeminiTest()}
+            disabled={geminiRunning}
+            className="inline-flex min-h-[44px] w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+          >
+            {geminiRunning ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Play className="h-4 w-4" strokeWidth={2} />
+            )}
+            <span>{geminiRunning ? 'Running Gemini Test...' : 'Run Gemini Test'}</span>
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-xs font-semibold text-slate-900">
+                STATUS
+              </span>
+              <span
+                data-testid="gemini-smoke-status"
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-mono text-xs font-semibold ${
+                  geminiResult.status === 'PASS'
+                    ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
+                    : geminiResult.status === 'FAIL'
+                      ? 'bg-red-50 text-red-700 ring-1 ring-red-200'
+                      : geminiResult.status === 'RUNNING'
+                        ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-200'
+                        : 'bg-slate-100 text-slate-600'
+                }`}
+              >
+                {geminiResult.status === 'PASS' && <CheckCircle2 className="h-3 w-3" />}
+                {geminiResult.status === 'FAIL' && <XCircle className="h-3 w-3" />}
+                {geminiResult.status === 'RUNNING' && <Loader2 className="h-3 w-3 animate-spin" />}
+                <span>{geminiResult.status}</span>
+              </span>
+            </div>
+
+            {geminiResult.checkedAt && (
+              <span className="font-mono text-[11px] text-slate-400 tabular-nums">
+                {geminiResult.checkedAt}
+              </span>
+            )}
+          </div>
+
+          {geminiResult.status === 'PENDING' && (
+            <p className="text-xs text-slate-500">
+              Click &ldquo;Run Gemini Test&rdquo; to verify end-to-end server-side Gemini generation.
+            </p>
+          )}
+
+          {geminiResult.error && (
+            <div
+              role="alert"
+              data-testid="gemini-smoke-error"
+              className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs leading-relaxed text-red-900"
+            >
+              {geminiResult.error}
+            </div>
+          )}
+
+          {(geminiResult.model || geminiResult.generatedAt || geminiResult.text) && (
+            <dl className="grid grid-cols-1 gap-3 rounded-lg border border-slate-100 bg-slate-50 p-3.5 text-xs sm:grid-cols-2">
+              <div>
+                <dt className="font-medium text-slate-500">Model ID</dt>
+                <dd
+                  data-testid="gemini-smoke-model"
+                  className="mt-1 font-mono text-slate-900"
+                >
+                  {geminiResult.model ?? '—'}
+                </dd>
+              </div>
+              <div>
+                <dt className="font-medium text-slate-500">Generated At</dt>
+                <dd
+                  data-testid="gemini-smoke-timestamp"
+                  className="mt-1 font-mono text-slate-900 tabular-nums break-all"
+                >
+                  {geminiResult.generatedAt ?? '—'}
+                </dd>
+              </div>
+              <div className="sm:col-span-2">
+                <dt className="font-medium text-slate-500">Generated Text</dt>
+                <dd
+                  data-testid="gemini-smoke-text"
+                  className="mt-1 rounded-md border border-slate-200 bg-white p-2.5 text-sm leading-relaxed text-slate-900 break-words"
+                >
+                  {geminiResult.text ?? '—'}
+                </dd>
+              </div>
+            </dl>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
