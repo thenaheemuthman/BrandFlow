@@ -18,6 +18,7 @@ import { ContentStudioGlobalView } from './components/sections/ContentStudioGlob
 import { WritingStylesView } from './components/sections/WritingStylesView';
 import { PromptLibraryView } from './components/sections/PromptLibraryView';
 import { SettingsView } from './components/sections/SettingsView';
+import { Phase2AVerifyView } from './components/sections/Phase2AVerifyView';
 import { ConfirmDialog } from './components/common/ConfirmDialog';
 import { ToastBanner, type ToastMessage } from './components/common/ToastBanner';
 import { useAuth } from './auth/AuthProvider';
@@ -331,6 +332,12 @@ export function App() {
           { label: 'Dashboard', route: { view: 'dashboard' } as AppRoute },
           { label: 'Settings' },
         ];
+      case 'phase2a-verify':
+        return [
+          { label: 'Dashboard', route: { view: 'dashboard' } as AppRoute },
+          { label: 'Settings', route: { view: 'settings' } as AppRoute },
+          { label: 'Phase 2A Verification' },
+        ];
     }
   }, [route, activeBrand]);
 
@@ -508,6 +515,20 @@ export function App() {
             profile={profile}
             storage={storage}
             onSaveProfile={handleSaveProfile}
+            onOpenPhase2AVerify={() => handleNavigate({ view: 'phase2a-verify' })}
+          />
+        )}
+
+        {route.view === 'phase2a-verify' && (
+          <Phase2AVerifyView
+            brands={brands}
+            ownerUserId={auth.session.user.id}
+            onRefreshBrands={async () => {
+              const { brands: nextBrands } = await api.listBrands();
+              setBrands(nextBrands);
+              return nextBrands;
+            }}
+            onNavigate={handleNavigate}
           />
         )}
       </AppShell>

@@ -9,7 +9,8 @@ export type AppRoute =
   | { view: 'content-studio' }
   | { view: 'writing-styles' }
   | { view: 'prompt-library' }
-  | { view: 'settings' };
+  | { view: 'settings' }
+  | { view: 'phase2a-verify' };
 
 const WORKSPACE_SECTIONS: WorkspaceSection[] = [
   'overview',
@@ -46,6 +47,9 @@ export function parseRoute(pathname: string): AppRoute {
   }
   if (clean === '/settings') {
     return { view: 'settings' };
+  }
+  if (clean === '/verify-phase2a') {
+    return { view: 'phase2a-verify' };
   }
 
   const editMatch = clean.match(/^\/brands\/([^/]+)\/edit$/);
@@ -95,5 +99,7 @@ export function routeToPath(route: AppRoute): string {
       return '/prompt-library';
     case 'settings':
       return '/settings';
+    case 'phase2a-verify':
+      return '/verify-phase2a';
   }
 }

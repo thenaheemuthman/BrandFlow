@@ -1,17 +1,19 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { CheckCircle2, Database, KeyRound, User } from 'lucide-react';
+import { CheckCircle2, Database, FlaskConical, KeyRound, User } from 'lucide-react';
 import type { StorageStatus, UserProfile } from '../../types/brand';
 
 interface SettingsViewProps {
   profile: UserProfile;
   storage: StorageStatus;
   onSaveProfile: (patch: Partial<UserProfile>) => Promise<void>;
+  onOpenPhase2AVerify?: () => void;
 }
 
 export function SettingsView({
   profile,
   storage,
   onSaveProfile,
+  onOpenPhase2AVerify,
 }: SettingsViewProps) {
   const [fullName, setFullName] = useState(profile.fullName);
   const [role, setRole] = useState(profile.role);
@@ -188,6 +190,31 @@ export function SettingsView({
           </div>
         </div>
       </section>
+
+      {onOpenPhase2AVerify && (
+        <section className="rounded-xl border border-amber-200 bg-white p-6">
+          <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <FlaskConical className="h-4 w-4 text-amber-600" strokeWidth={1.75} />
+                <h2 className="text-base font-semibold text-slate-900">
+                  Temporary Diagnostic: Phase 2A API Verification
+                </h2>
+              </div>
+              <p className="mt-1 text-sm text-slate-600">
+                Owner-only testing utility to verify live strategy-module CRUD operations on this deployment without modifying existing records.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenPhase2AVerify}
+              className="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-800 transition-colors hover:bg-slate-50 whitespace-nowrap"
+            >
+              Open Verification Panel
+            </button>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

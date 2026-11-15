@@ -68,6 +68,7 @@ function getActiveNavId(route: AppRoute): NavItem['id'] {
     case 'prompt-library':
       return 'prompt-library';
     case 'settings':
+    case 'phase2a-verify':
       return 'settings';
   }
 }
