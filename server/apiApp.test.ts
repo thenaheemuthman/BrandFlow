@@ -2,7 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createApiApp } from './apiApp.ts';
+import { createApiApp, type CreateApiAppOptions } from './apiApp.ts';
+import {
+  DEFAULT_GEMINI_MODEL,
+  GeminiProviderError,
+  GeminiTimeoutError,
+  MAX_CONTEXT_LENGTH,
+  MAX_PROMPT_LENGTH,
+  generateGeminiContent,
+} from './gemini.ts';
 import type { BrandModuleStatuses } from '../src/types/brand.ts';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -85,11 +93,13 @@ function createInitialState(): StubSupabaseState {
 
 async function withTestServer(
   run: (baseUrl: string, state: StubSupabaseState) => Promise<void>,
+  appOptions?: CreateApiAppOptions,
 ) {
   const originalEnv = {
     SUPABASE_URL: process.env.SUPABASE_URL,
     SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
     BRANDFLOW_OWNER_USER_ID: process.env.BRANDFLOW_OWNER_USER_ID,
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
   };
   const originalFetch = globalThis.fetch;
 
@@ -99,7 +109,7 @@ async function withTestServer(
 
   const state = createInitialState();
 
-  const server = http.createServer(createApiApp());
+  const server = http.createServer(createApiApp(appOptions));
   await new Promise<void>((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve());
   });
@@ -258,6 +268,9 @@ async function withTestServer(
 
     if (originalEnv.BRANDFLOW_OWNER_USER_ID === undefined) delete process.env.BRANDFLOW_OWNER_USER_ID;
     else process.env.BRANDFLOW_OWNER_USER_ID = originalEnv.BRANDFLOW_OWNER_USER_ID;
+
+    if (originalEnv.GEMINI_API_KEY === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalEnv.GEMINI_API_KEY;
   }
 }
 
@@ -507,4 +520,215 @@ test('Phase 2A strategy module endpoints execute full list, get, upsert, and del
       ['module_updated', 'module_updated', 'module_completed', 'module_updated'],
     );
   });
+});
+
+test('POST /api/ai/generate enforces owner-only auth (401/403) and generates via mocked provider', async () => {
+  await withTestServer(
+    async (baseUrl) => {
+      // 1. Unauthenticated -> 401
+      const unauthRes = await fetch(`${baseUrl}/api/ai/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Hello' }),
+      });
+      assert.equal(unauthRes.status, 401);
+
+      // 2. Non-owner -> 403
+      const nonOwnerRes = await fetch(`${baseUrl}/api/ai/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer other-token',
+        },
+        body: JSON.stringify({ prompt: 'Hello' }),
+      });
+      assert.equal(nonOwnerRes.status, 403);
+
+      // 3. Valid authenticated owner request
+      const okRes = await fetch(`${baseUrl}/api/ai/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer owner-token',
+        },
+        body: JSON.stringify({
+          prompt: 'Draft a brand positioning line.',
+          context: { brandName: 'Solstice Health' },
+          model: 'gemini-3.1-flash-lite',
+        }),
+      });
+      assert.equal(okRes.status, 200);
+      const okBody = (await okRes.json()) as {
+        text: string;
+        model: string;
+        generatedAt: string;
+      };
+      assert.equal(okBody.text, 'Mocked response for gemini-3.1-flash-lite');
+      assert.equal(okBody.model, 'gemini-3.1-flash-lite');
+      assert.ok(!Number.isNaN(Date.parse(okBody.generatedAt)));
+    },
+    {
+      generateAiContent: async (input) => ({
+        text: `Mocked response for ${input.model}`,
+        model: input.model,
+        generatedAt: '2026-11-15T14:00:00.000Z',
+      }),
+    },
+  );
+});
+
+test('POST /api/ai/generate validates payloads, oversized inputs, and missing GEMINI_API_KEY safely', async () => {
+  await withTestServer(async (baseUrl) => {
+    delete process.env.GEMINI_API_KEY;
+    const authHeaders = {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer owner-token',
+    };
+
+    // 4. Missing GEMINI_API_KEY -> safe 503 config error
+    const missingKeyRes = await fetch(`${baseUrl}/api/ai/generate`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ prompt: 'Generate positioning' }),
+    });
+    assert.equal(missingKeyRes.status, 503);
+    const missingKeyText = await missingKeyRes.text();
+    assert.match(missingKeyText, /not configured/i);
+
+    // 5. Invalid bodies -> 400
+    const badJsonRes = await fetch(`${baseUrl}/api/ai/generate`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: '{bad-json',
+    });
+    assert.equal(badJsonRes.status, 400);
+
+    const invalidCases = [
+      {},
+      { prompt: '' },
+      { prompt: 42 },
+      { prompt: 'Valid', context: ['array-not-allowed'] },
+      { prompt: 'Valid', model: 'gemini-1.5-pro' },
+      { prompt: 'Valid', model: 'arbitrary-model-name' },
+    ];
+    for (const payload of invalidCases) {
+      const res = await fetch(`${baseUrl}/api/ai/generate`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify(payload),
+      });
+      assert.equal(res.status, 400);
+    }
+
+    // 6. Oversized prompt, oversized context, and oversized request body
+    const longPromptRes = await fetch(`${baseUrl}/api/ai/generate`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ prompt: 'p'.repeat(MAX_PROMPT_LENGTH + 1) }),
+    });
+    assert.equal(longPromptRes.status, 400);
+
+    const longContextRes = await fetch(`${baseUrl}/api/ai/generate`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({
+        prompt: 'Valid prompt',
+        context: 'c'.repeat(MAX_CONTEXT_LENGTH + 1),
+      }),
+    });
+    assert.equal(longContextRes.status, 400);
+
+    const hugeBodyRes = await fetch(`${baseUrl}/api/ai/generate`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ prompt: 'Valid', context: 'x'.repeat(80 * 1024) }),
+    });
+    assert.equal(hugeBodyRes.status, 413);
+    const hugeBodyJson = (await hugeBodyRes.json()) as { error: string };
+    assert.match(hugeBodyJson.error, /size limit/i);
+  });
+});
+
+test('POST /api/ai/generate returns sanitised provider errors and never exposes keys or credentials', async () => {
+  const secretKey = 'AIzaSyTestSecretKeyDoNotLeak12345';
+
+  // Use real generateGeminiContent wired with mocked client throwing credentialed error
+  await withTestServer(
+    async (baseUrl) => {
+      process.env.GEMINI_API_KEY = secretKey;
+      const authHeaders = {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer owner-token',
+      };
+
+      const providerFailRes = await fetch(`${baseUrl}/api/ai/generate`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ prompt: 'Test failure sanitisation' }),
+      });
+      assert.equal(providerFailRes.status, 502);
+      const rawBody = await providerFailRes.text();
+      assert.equal(rawBody.includes(secretKey), false);
+      assert.equal(rawBody.includes('googleapis'), false);
+      assert.equal(rawBody.includes('at '), false);
+      const parsed = JSON.parse(rawBody) as { error: string };
+      assert.ok(parsed.error.length > 0);
+    },
+    {
+      generateAiContent: (input) =>
+        generateGeminiContent(input, {
+          apiKey: secretKey,
+          clientFactory: () => ({
+            models: {
+              async generateContent() {
+                const err = new Error(
+                  `Upstream failure with key=${secretKey} at https://generativelanguage.googleapis.com`,
+                ) as Error & { status?: number };
+                err.status = 500;
+                throw err;
+              },
+            },
+          }),
+        }),
+    },
+  );
+
+  // Also test rate-limit and timeout error HTTP statuses
+  await withTestServer(
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/api/ai/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer owner-token',
+        },
+        body: JSON.stringify({ prompt: 'Rate limited', model: DEFAULT_GEMINI_MODEL }),
+      });
+      assert.equal(res.status, 429);
+    },
+    {
+      generateAiContent: async () => {
+        throw new GeminiProviderError('Rate limited', 429);
+      },
+    },
+  );
+
+  await withTestServer(
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/api/ai/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer owner-token',
+        },
+        body: JSON.stringify({ prompt: 'Timeout test' }),
+      });
+      assert.equal(res.status, 504);
+    },
+    {
+      generateAiContent: async () => {
+        throw new GeminiTimeoutError();
+      },
+    },
+  );
 });

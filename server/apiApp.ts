@@ -7,6 +7,15 @@ import {
   isValidPhase2AModuleKey,
   validateServerBrandInput,
 } from './storage.ts';
+import {
+  AI_REQUEST_BODY_LIMIT,
+  GeminiConfigError,
+  GeminiProviderError,
+  GeminiTimeoutError,
+  generateGeminiContent,
+  validateAiGenerateBody,
+  type GeminiGenerateFn,
+} from './gemini.ts';
 import type {
   BrandFormInput,
   UpsertBrandModuleInput,
@@ -154,15 +163,21 @@ function getStorage(req: Request) {
   return createStorageRepository(authReq.authenticatedUser.id, authReq.accessToken, authReq.authenticatedUser.email);
 }
 
-export function createApiApp() {
+export interface CreateApiAppOptions {
+  generateAiContent?: GeminiGenerateFn;
+}
+
+export function createApiApp(options?: CreateApiAppOptions) {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  const generateAi = options?.generateAiContent ?? ((input) => generateGeminiContent(input));
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
   });
 
   app.use('/api', requireOwner);
+  app.use('/api/ai/generate', express.json({ limit: AI_REQUEST_BODY_LIMIT }));
+  app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/workspace/overview', async (req, res) => {
     try {
@@ -308,12 +323,48 @@ export function createApiApp() {
     }
   });
 
+  app.post('/api/ai/generate', async (req, res) => {
+    const { data, error } = validateAiGenerateBody(req.body);
+    if (error || !data) {
+      res.status(400).json({ error: error ?? 'Invalid AI generation request.' });
+      return;
+    }
+
+    try {
+      const result = await generateAi(data);
+      res.json(result);
+    } catch (err) {
+      if (err instanceof GeminiConfigError) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      if (err instanceof GeminiTimeoutError || err instanceof GeminiProviderError) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      res.status(502).json({ error: 'AI generation failed due to an upstream provider error.' });
+    }
+  });
+
   app.put('/api/profile', async (req, res) => {
     try {
       const patch = (req.body ?? {}) as Partial<UserProfile>;
       const profile = await getStorage(req).updateProfile(patch);
       res.json({ profile });
     } catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update profile.' }); }
+  });
+
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const typedErr = err as { type?: string; status?: number };
+    if (typedErr?.type === 'entity.too.large' || typedErr?.status === 413) {
+      res.status(413).json({ error: 'Request payload exceeds the allowed size limit.' });
+      return;
+    }
+    if (typedErr?.type === 'entity.parse.failed' || typedErr?.status === 400) {
+      res.status(400).json({ error: 'Invalid JSON request body.' });
+      return;
+    }
+    res.status(500).json({ error: 'Unexpected server error.' });
   });
 
   return app;

@@ -1,6 +1,8 @@
 import { supabase } from '../lib/supabase';
 import type {
   ActivityEvent,
+  AiGenerateRequest,
+  AiGenerateResponse,
   Brand,
   BrandFormInput,
   BrandStrategyModule,
@@ -123,6 +125,13 @@ export const api = {
     return requestJson<{ profile: UserProfile }>('/api/profile', {
       method: 'PUT',
       body: JSON.stringify(patch),
+    });
+  },
+
+  generateAiContent(input: AiGenerateRequest): Promise<AiGenerateResponse> {
+    return requestJson<AiGenerateResponse>('/api/ai/generate', {
+      method: 'POST',
+      body: JSON.stringify(input),
     });
   },
 };

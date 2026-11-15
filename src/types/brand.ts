@@ -138,3 +138,17 @@ export interface WorkspaceOverviewResponse {
   profile: UserProfile;
   storage: StorageStatus;
 }
+
+export type AllowedGeminiModel = 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite';
+
+export interface AiGenerateRequest {
+  prompt: string;
+  context?: string | Record<string, unknown>;
+  model?: AllowedGeminiModel;
+}
+
+export interface AiGenerateResponse {
+  text: string;
+  model: AllowedGeminiModel;
+  generatedAt: string;
+}
