@@ -8,7 +8,12 @@ import type {
   Brand,
   BrandFormInput,
   BrandModuleStatuses,
+  BrandStrategyModule,
+  ModuleStatus,
+  Phase2AModuleKey,
   StorageStatus,
+  StrategyModuleContent,
+  UpsertBrandModuleInput,
   UserProfile,
 } from '../src/types/brand.ts';
 
@@ -79,6 +84,87 @@ export function validateServerBrandInput(input: BrandFormInput): string | null {
   return null;
 }
 
+export class BrandAccessError extends Error {
+  constructor(message = 'Brand not found or access denied.') {
+    super(message);
+    this.name = 'BrandAccessError';
+  }
+}
+
+export class ModuleValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ModuleValidationError';
+  }
+}
+
+export const PHASE_2A_MODULE_KEYS: readonly Phase2AModuleKey[] = [
+  'brandFoundation',
+  'brandMessaging',
+];
+
+export const MODULE_STATUSES: readonly ModuleStatus[] = [
+  'not_started',
+  'in_progress',
+  'completed',
+];
+
+const PHASE_2A_MODULE_LABELS: Record<Phase2AModuleKey, string> = {
+  brandFoundation: 'Brand Foundation',
+  brandMessaging: 'Brand Messaging',
+};
+
+export function isValidPhase2AModuleKey(moduleKey: string): moduleKey is Phase2AModuleKey {
+  return PHASE_2A_MODULE_KEYS.includes(moduleKey as Phase2AModuleKey);
+}
+
+export function isValidModuleStatus(status: string): status is ModuleStatus {
+  return MODULE_STATUSES.includes(status as ModuleStatus);
+}
+
+function assertValidModuleKey(moduleKey: string): asserts moduleKey is Phase2AModuleKey {
+  if (!isValidPhase2AModuleKey(moduleKey)) {
+    throw new ModuleValidationError(`Unsupported strategy module key: ${moduleKey}`);
+  }
+}
+
+function assertValidModuleStatus(status: string): asserts status is ModuleStatus {
+  if (!isValidModuleStatus(status)) {
+    throw new ModuleValidationError(`Invalid module status: ${status}`);
+  }
+}
+
+function sanitizeModuleContent(content: unknown): StrategyModuleContent {
+  if (typeof content !== 'object' || content === null || Array.isArray(content)) {
+    throw new ModuleValidationError('Strategy module content must be a JSON object.');
+  }
+  return JSON.parse(JSON.stringify(content)) as StrategyModuleContent;
+}
+
+function buildModuleActivity(
+  status: ModuleStatus,
+  moduleKey: Phase2AModuleKey,
+  brandName: string,
+): { type: ActivityType; description: string } {
+  const label = PHASE_2A_MODULE_LABELS[moduleKey];
+  if (status === 'completed') {
+    return {
+      type: 'module_completed',
+      description: `Completed ${label} for ${brandName}`,
+    };
+  }
+  if (status === 'in_progress') {
+    return {
+      type: 'module_updated',
+      description: `Saved ${label} for ${brandName}`,
+    };
+  }
+  return {
+    type: 'module_updated',
+    description: `Updated ${label} status for ${brandName}`,
+  };
+}
+
 export interface StorageRepository {
   getStorageStatus(): StorageStatus;
   listBrands(): Promise<Brand[]>;
@@ -86,6 +172,14 @@ export interface StorageRepository {
   createBrand(input: BrandFormInput): Promise<Brand>;
   updateBrand(id: string, input: BrandFormInput): Promise<Brand | null>;
   deleteBrand(id: string): Promise<boolean>;
+  listBrandModules(brandId: string): Promise<BrandStrategyModule[]>;
+  getBrandModule(brandId: string, moduleKey: Phase2AModuleKey): Promise<BrandStrategyModule | null>;
+  upsertBrandModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+    data: UpsertBrandModuleInput,
+  ): Promise<BrandStrategyModule>;
+  deleteBrandModule(brandId: string, moduleKey: Phase2AModuleKey): Promise<boolean>;
   listActivities(brandId?: string): Promise<ActivityEvent[]>;
   getProfile(): Promise<UserProfile>;
   updateProfile(patch: Partial<UserProfile>): Promise<UserProfile>;
@@ -95,6 +189,7 @@ interface LocalDatabaseFile {
   brands: Brand[];
   activities: ActivityEvent[];
   profile: UserProfile;
+  brandModules: BrandStrategyModule[];
 }
 
 export class LocalJsonStorageRepository implements StorageRepository {
@@ -124,12 +219,14 @@ export class LocalJsonStorageRepository implements StorageRepository {
         brands: Array.isArray(parsed.brands) ? parsed.brands : [],
         activities: Array.isArray(parsed.activities) ? parsed.activities : [],
         profile: parsed.profile ? { ...DEFAULT_PROFILE, ...parsed.profile, id: this.userId, email: this.userEmail || parsed.profile.email || DEFAULT_PROFILE.email } : { ...DEFAULT_PROFILE, id: this.userId, email: this.userEmail || DEFAULT_PROFILE.email },
+        brandModules: Array.isArray(parsed.brandModules) ? parsed.brandModules : [],
       };
     } catch {
       const initial: LocalDatabaseFile = {
         brands: [],
         activities: [],
         profile: { ...DEFAULT_PROFILE, id: this.userId, email: this.userEmail || DEFAULT_PROFILE.email },
+        brandModules: [],
       };
       await this.writeDb(initial);
       return initial;
@@ -306,10 +403,11 @@ export class LocalJsonStorageRepository implements StorageRepository {
   async deleteBrand(id: string): Promise<boolean> {
     return this.runSerialized(async () => {
       const db = await this.readDb();
-      const existing = db.brands.find((b) => b.id === id);
+      const existing = db.brands.find((b) => b.id === id && b.userId === this.userId);
       if (!existing) return false;
 
       db.brands = db.brands.filter((b) => b.id !== id);
+      db.brandModules = db.brandModules.filter((m) => m.brandId !== id);
       db.activities.unshift(
         this.buildActivity(
           null,
@@ -319,6 +417,168 @@ export class LocalJsonStorageRepository implements StorageRepository {
         ),
       );
       db.activities = db.activities.slice(0, 50);
+      await this.writeDb(db);
+      return true;
+    });
+  }
+
+  private requireOwnedBrand(
+    db: LocalDatabaseFile,
+    brandId: string,
+  ): { brand: Brand; index: number } {
+    const index = db.brands.findIndex(
+      (b) => b.id === brandId && b.userId === this.userId,
+    );
+    if (index === -1) {
+      throw new BrandAccessError('Brand not found or access denied.');
+    }
+    return { brand: db.brands[index], index };
+  }
+
+  async listBrandModules(brandId: string): Promise<BrandStrategyModule[]> {
+    const db = await this.readDb();
+    this.requireOwnedBrand(db, brandId);
+    return db.brandModules
+      .filter((m) => m.brandId === brandId && m.userId === this.userId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async getBrandModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+  ): Promise<BrandStrategyModule | null> {
+    assertValidModuleKey(moduleKey);
+    const db = await this.readDb();
+    this.requireOwnedBrand(db, brandId);
+    return (
+      db.brandModules.find(
+        (m) =>
+          m.brandId === brandId &&
+          m.moduleKey === moduleKey &&
+          m.userId === this.userId,
+      ) ?? null
+    );
+  }
+
+  async upsertBrandModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+    data: UpsertBrandModuleInput,
+  ): Promise<BrandStrategyModule> {
+    assertValidModuleKey(moduleKey);
+    if (data.status !== undefined) {
+      assertValidModuleStatus(data.status);
+    }
+    const sanitizedContent =
+      data.content !== undefined ? sanitizeModuleContent(data.content) : undefined;
+
+    return this.runSerialized(async () => {
+      const db = await this.readDb();
+      const { brand, index: brandIndex } = this.requireOwnedBrand(db, brandId);
+      const now = new Date().toISOString();
+
+      const existingIndex = db.brandModules.findIndex(
+        (m) =>
+          m.brandId === brandId &&
+          m.moduleKey === moduleKey &&
+          m.userId === this.userId,
+      );
+      const existing = existingIndex !== -1 ? db.brandModules[existingIndex] : null;
+      const nextStatus: ModuleStatus = data.status ?? existing?.status ?? 'not_started';
+
+      const moduleRecord: BrandStrategyModule = {
+        id: existing?.id ?? crypto.randomUUID(),
+        userId: this.userId,
+        brandId,
+        moduleKey,
+        status: nextStatus,
+        content: sanitizedContent ?? existing?.content ?? {},
+        promptId: data.promptId !== undefined ? data.promptId : (existing?.promptId ?? null),
+        promptVersion:
+          data.promptVersion !== undefined
+            ? data.promptVersion
+            : (existing?.promptVersion ?? null),
+        model: data.model !== undefined ? data.model : (existing?.model ?? null),
+        generatedAt:
+          data.generatedAt !== undefined
+            ? data.generatedAt
+            : (existing?.generatedAt ?? null),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+
+      if (existingIndex !== -1) {
+        db.brandModules[existingIndex] = moduleRecord;
+      } else {
+        db.brandModules.push(moduleRecord);
+      }
+
+      const nextStatuses: BrandModuleStatuses = {
+        ...defaultModuleStatuses(),
+        ...(brand.moduleStatuses ?? defaultModuleStatuses()),
+        [moduleKey]: nextStatus,
+      };
+
+      db.brands[brandIndex] = {
+        ...brand,
+        moduleStatuses: nextStatuses,
+        updatedAt: now,
+      };
+
+      const activity = buildModuleActivity(nextStatus, moduleKey, brand.brandName);
+      db.activities.unshift(
+        this.buildActivity(brand.id, brand.brandName, activity.type, activity.description),
+      );
+      db.activities = db.activities.slice(0, 50);
+
+      await this.writeDb(db);
+      return moduleRecord;
+    });
+  }
+
+  async deleteBrandModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+  ): Promise<boolean> {
+    assertValidModuleKey(moduleKey);
+
+    return this.runSerialized(async () => {
+      const db = await this.readDb();
+      const { brand, index: brandIndex } = this.requireOwnedBrand(db, brandId);
+
+      const existingIndex = db.brandModules.findIndex(
+        (m) =>
+          m.brandId === brandId &&
+          m.moduleKey === moduleKey &&
+          m.userId === this.userId,
+      );
+      if (existingIndex === -1) return false;
+
+      db.brandModules.splice(existingIndex, 1);
+
+      const now = new Date().toISOString();
+      const nextStatuses: BrandModuleStatuses = {
+        ...defaultModuleStatuses(),
+        ...(brand.moduleStatuses ?? defaultModuleStatuses()),
+        [moduleKey]: 'not_started',
+      };
+
+      db.brands[brandIndex] = {
+        ...brand,
+        moduleStatuses: nextStatuses,
+        updatedAt: now,
+      };
+
+      db.activities.unshift(
+        this.buildActivity(
+          brand.id,
+          brand.brandName,
+          'module_updated',
+          `Removed ${PHASE_2A_MODULE_LABELS[moduleKey]} for ${brand.brandName}`,
+        ),
+      );
+      db.activities = db.activities.slice(0, 50);
+
       await this.writeDb(db);
       return true;
     });
@@ -402,6 +662,38 @@ function mapSupabaseRowToBrand(row: SupabaseBrandRow): Brand {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastAccessedAt: row.last_accessed_at,
+  };
+}
+
+interface SupabaseBrandModuleRow {
+  id: string;
+  user_id: string;
+  brand_id: string;
+  module_key: Phase2AModuleKey;
+  status: ModuleStatus;
+  content: StrategyModuleContent;
+  prompt_id: string | null;
+  prompt_version: string | null;
+  model: string | null;
+  generated_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapSupabaseRowToBrandModule(row: SupabaseBrandModuleRow): BrandStrategyModule {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    brandId: row.brand_id,
+    moduleKey: row.module_key,
+    status: row.status,
+    content: row.content ?? {},
+    promptId: row.prompt_id ?? null,
+    promptVersion: row.prompt_version ?? null,
+    model: row.model ?? null,
+    generatedAt: row.generated_at ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -577,6 +869,192 @@ export class SupabaseStorageRepository implements StorageRepository {
         description: `Deleted brand ${existing.brandName}`,
       }),
     });
+    return true;
+  }
+
+  private async requireOwnedBrand(brandId: string): Promise<Brand> {
+    const brand = await this.getBrand(brandId, false);
+    if (!brand || brand.userId !== this.userId) {
+      throw new BrandAccessError('Brand not found or access denied.');
+    }
+    return brand;
+  }
+
+  async listBrandModules(brandId: string): Promise<BrandStrategyModule[]> {
+    await this.requireOwnedBrand(brandId);
+    const rows = await this.request<SupabaseBrandModuleRow[]>(
+      `brand_strategy_modules?brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}&select=*&order=created_at.asc`,
+    );
+    return rows.map(mapSupabaseRowToBrandModule);
+  }
+
+  async getBrandModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+  ): Promise<BrandStrategyModule | null> {
+    assertValidModuleKey(moduleKey);
+    await this.requireOwnedBrand(brandId);
+    const rows = await this.request<SupabaseBrandModuleRow[]>(
+      `brand_strategy_modules?brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.${encodeURIComponent(moduleKey)}&user_id=eq.${encodeURIComponent(this.userId)}&select=*`,
+    );
+    return rows[0] ? mapSupabaseRowToBrandModule(rows[0]) : null;
+  }
+
+  async upsertBrandModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+    data: UpsertBrandModuleInput,
+  ): Promise<BrandStrategyModule> {
+    assertValidModuleKey(moduleKey);
+    if (data.status !== undefined) {
+      assertValidModuleStatus(data.status);
+    }
+    const sanitizedContent =
+      data.content !== undefined ? sanitizeModuleContent(data.content) : undefined;
+
+    const brand = await this.requireOwnedBrand(brandId);
+    const existingRows = await this.request<SupabaseBrandModuleRow[]>(
+      `brand_strategy_modules?brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.${encodeURIComponent(moduleKey)}&user_id=eq.${encodeURIComponent(this.userId)}&select=*`,
+    );
+    const existing = existingRows[0] ? mapSupabaseRowToBrandModule(existingRows[0]) : null;
+
+    const now = new Date().toISOString();
+    const nextStatus: ModuleStatus = data.status ?? existing?.status ?? 'not_started';
+    const nextContent = sanitizedContent ?? existing?.content ?? {};
+    const nextPromptId =
+      data.promptId !== undefined ? data.promptId : (existing?.promptId ?? null);
+    const nextPromptVersion =
+      data.promptVersion !== undefined
+        ? data.promptVersion
+        : (existing?.promptVersion ?? null);
+    const nextModel = data.model !== undefined ? data.model : (existing?.model ?? null);
+    const nextGeneratedAt =
+      data.generatedAt !== undefined
+        ? data.generatedAt
+        : (existing?.generatedAt ?? null);
+
+    let savedRow: SupabaseBrandModuleRow;
+    if (existing) {
+      const updatedRows = await this.request<SupabaseBrandModuleRow[]>(
+        `brand_strategy_modules?id=eq.${encodeURIComponent(existing.id)}&user_id=eq.${encodeURIComponent(this.userId)}`,
+        {
+          method: 'PATCH',
+          headers: { Prefer: 'return=representation' },
+          body: JSON.stringify({
+            status: nextStatus,
+            content: nextContent,
+            prompt_id: nextPromptId,
+            prompt_version: nextPromptVersion,
+            model: nextModel,
+            generated_at: nextGeneratedAt,
+            updated_at: now,
+          }),
+        },
+      );
+      savedRow = updatedRows[0];
+    } else {
+      const insertedRows = await this.request<SupabaseBrandModuleRow[]>(
+        'brand_strategy_modules?on_conflict=brand_id,module_key',
+        {
+          method: 'POST',
+          headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+          body: JSON.stringify({
+            user_id: this.userId,
+            brand_id: brandId,
+            module_key: moduleKey,
+            status: nextStatus,
+            content: nextContent,
+            prompt_id: nextPromptId,
+            prompt_version: nextPromptVersion,
+            model: nextModel,
+            generated_at: nextGeneratedAt,
+            updated_at: now,
+          }),
+        },
+      );
+      savedRow = insertedRows[0];
+    }
+
+    const nextStatuses: BrandModuleStatuses = {
+      ...defaultModuleStatuses(),
+      ...(brand.moduleStatuses ?? defaultModuleStatuses()),
+      [moduleKey]: nextStatus,
+    };
+
+    await this.request(
+      `brands?id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          module_statuses: nextStatuses,
+          updated_at: now,
+        }),
+      },
+    );
+
+    const activity = buildModuleActivity(nextStatus, moduleKey, brand.brandName);
+    await this.request('brand_activities', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: this.userId,
+        brand_id: brand.id,
+        brand_name: brand.brandName,
+        type: activity.type,
+        description: activity.description,
+      }),
+    });
+
+    return mapSupabaseRowToBrandModule(savedRow);
+  }
+
+  async deleteBrandModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+  ): Promise<boolean> {
+    assertValidModuleKey(moduleKey);
+    const brand = await this.requireOwnedBrand(brandId);
+
+    const deletedRows = await this.request<SupabaseBrandModuleRow[]>(
+      `brand_strategy_modules?brand_id=eq.${encodeURIComponent(brandId)}&module_key=eq.${encodeURIComponent(moduleKey)}&user_id=eq.${encodeURIComponent(this.userId)}`,
+      {
+        method: 'DELETE',
+        headers: { Prefer: 'return=representation' },
+      },
+    );
+
+    if (!deletedRows || deletedRows.length === 0) {
+      return false;
+    }
+
+    const now = new Date().toISOString();
+    const nextStatuses: BrandModuleStatuses = {
+      ...defaultModuleStatuses(),
+      ...(brand.moduleStatuses ?? defaultModuleStatuses()),
+      [moduleKey]: 'not_started',
+    };
+
+    await this.request(
+      `brands?id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          module_statuses: nextStatuses,
+          updated_at: now,
+        }),
+      },
+    );
+
+    await this.request('brand_activities', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: this.userId,
+        brand_id: brand.id,
+        brand_name: brand.brandName,
+        type: 'module_updated',
+        description: `Removed ${PHASE_2A_MODULE_LABELS[moduleKey]} for ${brand.brandName}`,
+      }),
+    });
+
     return true;
   }
 

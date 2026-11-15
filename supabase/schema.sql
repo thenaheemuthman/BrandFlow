@@ -4,7 +4,7 @@
 create extension if not exists "pgcrypto";
 
 create table if not exists public.workspace_profiles (
-  id text primary key,
+  id uuid primary key references auth.users (id) on delete cascade,
   full_name text not null default 'Workspace Owner',
   email text not null default '',
   role text not null default 'Brand Strategist',
@@ -14,7 +14,7 @@ create table if not exists public.workspace_profiles (
 
 create table if not exists public.brands (
   id uuid primary key default gen_random_uuid(),
-  user_id text not null,
+  user_id uuid not null references auth.users (id) on delete cascade,
   brand_name text not null,
   business_description text not null,
   industry text not null,
@@ -50,7 +50,7 @@ create index if not exists idx_brands_updated_at on public.brands (updated_at de
 
 create table if not exists public.brand_activities (
   id uuid primary key default gen_random_uuid(),
-  user_id text not null,
+  user_id uuid not null references auth.users (id) on delete cascade,
   brand_id uuid references public.brands (id) on delete set null,
   brand_name text not null,
   type text not null,
@@ -68,17 +68,119 @@ alter table public.brand_activities enable row level security;
 create policy "Users manage their own profile"
   on public.workspace_profiles
   for all
-  using (auth.uid()::text = id)
-  with check (auth.uid()::text = id);
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
 
 create policy "Users manage their own brands"
   on public.brands
   for all
-  using (auth.uid()::text = user_id)
-  with check (auth.uid()::text = user_id);
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 create policy "Users view their own brand activities"
   on public.brand_activities
   for all
-  using (auth.uid()::text = user_id)
-  with check (auth.uid()::text = user_id);
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- Phase 2A: Persisted Brand Strategy Modules (Brand Foundation & Brand Messaging)
+create table if not exists public.brand_strategy_modules (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  brand_id uuid not null references public.brands (id) on delete cascade,
+  module_key text not null,
+  status text not null default 'not_started',
+  content jsonb not null default '{}'::jsonb,
+  prompt_id text,
+  prompt_version text,
+  model text,
+  generated_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint chk_brand_strategy_modules_module_key
+    check (module_key in ('brandFoundation', 'brandMessaging')),
+  constraint chk_brand_strategy_modules_status
+    check (status in ('not_started', 'in_progress', 'completed')),
+  constraint uq_brand_strategy_modules_brand_module
+    unique (brand_id, module_key)
+);
+
+create index if not exists idx_brand_strategy_modules_user_id
+  on public.brand_strategy_modules (user_id);
+
+create index if not exists idx_brand_strategy_modules_brand_id
+  on public.brand_strategy_modules (brand_id);
+
+create index if not exists idx_brand_strategy_modules_user_brand
+  on public.brand_strategy_modules (user_id, brand_id);
+
+revoke all on table public.brand_strategy_modules from anon;
+grant select, insert, update, delete on table public.brand_strategy_modules to authenticated;
+
+alter table public.brand_strategy_modules enable row level security;
+
+create policy "Users view their own brand strategy modules"
+  on public.brand_strategy_modules
+  for select
+  to authenticated
+  using (
+    user_id = auth.uid()
+    and exists (
+      select 1
+      from public.brands b
+      where b.id = brand_id
+        and b.user_id = auth.uid()
+    )
+  );
+
+create policy "Users create strategy modules for their own brands"
+  on public.brand_strategy_modules
+  for insert
+  to authenticated
+  with check (
+    user_id = auth.uid()
+    and exists (
+      select 1
+      from public.brands b
+      where b.id = brand_id
+        and b.user_id = auth.uid()
+    )
+  );
+
+create policy "Users update their own brand strategy modules"
+  on public.brand_strategy_modules
+  for update
+  to authenticated
+  using (
+    user_id = auth.uid()
+    and exists (
+      select 1
+      from public.brands b
+      where b.id = brand_id
+        and b.user_id = auth.uid()
+    )
+  )
+  with check (
+    user_id = auth.uid()
+    and exists (
+      select 1
+      from public.brands b
+      where b.id = brand_id
+        and b.user_id = auth.uid()
+    )
+  );
+
+create policy "Users delete their own brand strategy modules"
+  on public.brand_strategy_modules
+  for delete
+  to authenticated
+  using (
+    user_id = auth.uid()
+    and exists (
+      select 1
+      from public.brands b
+      where b.id = brand_id
+        and b.user_id = auth.uid()
+    )
+  );
+

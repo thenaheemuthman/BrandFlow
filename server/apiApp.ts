@@ -1,9 +1,109 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import {
+  BrandAccessError,
+  ModuleValidationError,
   createStorageRepository,
+  isValidModuleStatus,
+  isValidPhase2AModuleKey,
   validateServerBrandInput,
 } from './storage.ts';
-import type { BrandFormInput, UserProfile } from '../src/types/brand.ts';
+import type {
+  BrandFormInput,
+  UpsertBrandModuleInput,
+  UserProfile,
+} from '../src/types/brand.ts';
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidBrandId(id: string): boolean {
+  return UUID_REGEX.test(id.trim());
+}
+
+function validateUpsertModuleBody(
+  body: unknown,
+): { data?: UpsertBrandModuleInput; error?: string } {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { error: 'Request body must be a JSON object.' };
+  }
+
+  const raw = body as Record<string, unknown>;
+  const data: UpsertBrandModuleInput = {};
+
+  if (raw.status !== undefined) {
+    if (typeof raw.status !== 'string' || !isValidModuleStatus(raw.status)) {
+      return {
+        error: 'Invalid module status. Supported values are not_started, in_progress, and completed.',
+      };
+    }
+    data.status = raw.status;
+  }
+
+  if (raw.content !== undefined) {
+    if (
+      typeof raw.content !== 'object' ||
+      raw.content === null ||
+      Array.isArray(raw.content)
+    ) {
+      return { error: 'Strategy module content must be a JSON object.' };
+    }
+    data.content = raw.content as Record<string, unknown>;
+  }
+
+  if (raw.promptId !== undefined) {
+    if (raw.promptId !== null && typeof raw.promptId !== 'string') {
+      return { error: 'promptId must be a string or null.' };
+    }
+    data.promptId = raw.promptId;
+  }
+
+  if (raw.promptVersion !== undefined) {
+    if (raw.promptVersion !== null && typeof raw.promptVersion !== 'string') {
+      return { error: 'promptVersion must be a string or null.' };
+    }
+    data.promptVersion = raw.promptVersion;
+  }
+
+  if (raw.model !== undefined) {
+    if (raw.model !== null && typeof raw.model !== 'string') {
+      return { error: 'model must be a string or null.' };
+    }
+    data.model = raw.model;
+  }
+
+  if (raw.generatedAt !== undefined) {
+    if (raw.generatedAt !== null) {
+      if (typeof raw.generatedAt !== 'string' || Number.isNaN(Date.parse(raw.generatedAt))) {
+        return { error: 'generatedAt must be a valid ISO timestamp string or null.' };
+      }
+    }
+    data.generatedAt = raw.generatedAt;
+  }
+
+  if (
+    data.status === undefined &&
+    data.content === undefined &&
+    data.promptId === undefined &&
+    data.promptVersion === undefined &&
+    data.model === undefined &&
+    data.generatedAt === undefined
+  ) {
+    return { error: 'Provide status or content to update the strategy module.' };
+  }
+
+  return { data };
+}
+
+function handleModuleError(res: Response, err: unknown, fallbackMessage: string) {
+  if (err instanceof BrandAccessError) {
+    res.status(404).json({ error: 'Brand not found.' });
+    return;
+  }
+  if (err instanceof ModuleValidationError) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+  res.status(500).json({ error: err instanceof Error ? err.message : fallbackMessage });
+}
 
 interface AuthenticatedRequest extends Request {
   authenticatedUser?: { id: string; email: string };
@@ -116,6 +216,96 @@ export function createApiApp() {
       if (!deleted) { res.status(404).json({ error: 'Brand not found.' }); return; }
       res.json({ deleted: true });
     } catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete brand.' }); }
+  });
+
+  app.get('/api/brands/:id/strategy-modules', async (req, res) => {
+    const brandId = req.params.id.trim();
+    if (!isValidBrandId(brandId)) {
+      res.status(400).json({ error: 'Invalid brand ID.' });
+      return;
+    }
+    try {
+      const modules = await getStorage(req).listBrandModules(brandId);
+      res.json({ modules });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to load strategy modules.');
+    }
+  });
+
+  app.get('/api/brands/:id/strategy-modules/:moduleKey', async (req, res) => {
+    const brandId = req.params.id.trim();
+    const moduleKey = req.params.moduleKey.trim();
+    if (!isValidBrandId(brandId)) {
+      res.status(400).json({ error: 'Invalid brand ID.' });
+      return;
+    }
+    if (!isValidPhase2AModuleKey(moduleKey)) {
+      res.status(400).json({
+        error: 'Unsupported strategy module key. Supported keys are brandFoundation and brandMessaging.',
+      });
+      return;
+    }
+    try {
+      const module = await getStorage(req).getBrandModule(brandId, moduleKey);
+      if (!module) {
+        res.status(404).json({ error: 'Strategy module not found.' });
+        return;
+      }
+      res.json({ module });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to load strategy module.');
+    }
+  });
+
+  app.put('/api/brands/:id/strategy-modules/:moduleKey', async (req, res) => {
+    const brandId = req.params.id.trim();
+    const moduleKey = req.params.moduleKey.trim();
+    if (!isValidBrandId(brandId)) {
+      res.status(400).json({ error: 'Invalid brand ID.' });
+      return;
+    }
+    if (!isValidPhase2AModuleKey(moduleKey)) {
+      res.status(400).json({
+        error: 'Unsupported strategy module key. Supported keys are brandFoundation and brandMessaging.',
+      });
+      return;
+    }
+    const { data, error } = validateUpsertModuleBody(req.body);
+    if (error || !data) {
+      res.status(400).json({ error: error ?? 'Invalid strategy module payload.' });
+      return;
+    }
+    try {
+      const module = await getStorage(req).upsertBrandModule(brandId, moduleKey, data);
+      res.json({ module });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to save strategy module.');
+    }
+  });
+
+  app.delete('/api/brands/:id/strategy-modules/:moduleKey', async (req, res) => {
+    const brandId = req.params.id.trim();
+    const moduleKey = req.params.moduleKey.trim();
+    if (!isValidBrandId(brandId)) {
+      res.status(400).json({ error: 'Invalid brand ID.' });
+      return;
+    }
+    if (!isValidPhase2AModuleKey(moduleKey)) {
+      res.status(400).json({
+        error: 'Unsupported strategy module key. Supported keys are brandFoundation and brandMessaging.',
+      });
+      return;
+    }
+    try {
+      const deleted = await getStorage(req).deleteBrandModule(brandId, moduleKey);
+      if (!deleted) {
+        res.status(404).json({ error: 'Strategy module not found.' });
+        return;
+      }
+      res.json({ deleted: true });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to delete strategy module.');
+    }
   });
 
   app.put('/api/profile', async (req, res) => {

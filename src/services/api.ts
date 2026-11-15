@@ -3,6 +3,9 @@ import type {
   ActivityEvent,
   Brand,
   BrandFormInput,
+  BrandStrategyModule,
+  Phase2AModuleKey,
+  UpsertBrandModuleInput,
   UserProfile,
   WorkspaceOverviewResponse,
 } from '../types/brand';
@@ -69,6 +72,47 @@ export const api = {
   deleteBrand(brandId: string): Promise<{ deleted: boolean }> {
     return requestJson<{ deleted: boolean }>(
       `/api/brands/${encodeURIComponent(brandId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
+  },
+
+  listStrategyModules(brandId: string): Promise<{ modules: BrandStrategyModule[] }> {
+    return requestJson<{ modules: BrandStrategyModule[] }>(
+      `/api/brands/${encodeURIComponent(brandId)}/strategy-modules`,
+    );
+  },
+
+  getStrategyModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+  ): Promise<{ module: BrandStrategyModule }> {
+    return requestJson<{ module: BrandStrategyModule }>(
+      `/api/brands/${encodeURIComponent(brandId)}/strategy-modules/${encodeURIComponent(moduleKey)}`,
+    );
+  },
+
+  upsertStrategyModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+    input: UpsertBrandModuleInput,
+  ): Promise<{ module: BrandStrategyModule }> {
+    return requestJson<{ module: BrandStrategyModule }>(
+      `/api/brands/${encodeURIComponent(brandId)}/strategy-modules/${encodeURIComponent(moduleKey)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      },
+    );
+  },
+
+  deleteStrategyModule(
+    brandId: string,
+    moduleKey: Phase2AModuleKey,
+  ): Promise<{ deleted: boolean }> {
+    return requestJson<{ deleted: boolean }>(
+      `/api/brands/${encodeURIComponent(brandId)}/strategy-modules/${encodeURIComponent(moduleKey)}`,
       {
         method: 'DELETE',
       },

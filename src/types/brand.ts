@@ -66,11 +66,40 @@ export interface BrandFormInput {
 
 export type BrandValidationErrors = Partial<Record<keyof BrandFormInput, string>>;
 
+export type Phase2AModuleKey = 'brandFoundation' | 'brandMessaging';
+
+export type StrategyModuleContent = Record<string, unknown>;
+
+export interface BrandStrategyModule {
+  id: string;
+  userId: string;
+  brandId: string;
+  moduleKey: Phase2AModuleKey;
+  status: ModuleStatus;
+  content: StrategyModuleContent;
+  promptId: string | null;
+  promptVersion: string | null;
+  model: string | null;
+  generatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpsertBrandModuleInput {
+  status?: ModuleStatus;
+  content?: StrategyModuleContent;
+  promptId?: string | null;
+  promptVersion?: string | null;
+  model?: string | null;
+  generatedAt?: string | null;
+}
+
 export type ActivityType =
   | 'brand_created'
   | 'brand_updated'
   | 'workspace_accessed'
   | 'brand_deleted'
+  | 'module_updated'
   | 'module_completed';
 
 export interface ActivityEvent {
