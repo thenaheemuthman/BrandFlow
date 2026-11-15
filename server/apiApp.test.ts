@@ -218,6 +218,23 @@ async function withTestServer(
 
     if (parsed.pathname === '/rest/v1/brand_activities' && method === 'POST') {
       const payload = JSON.parse(bodyText ?? '{}') as Record<string, unknown>;
+      const allowedActivityTypes = new Set([
+        'brand_created',
+        'brand_updated',
+        'workspace_accessed',
+        'brand_deleted',
+        'module_updated',
+        'module_completed',
+      ]);
+      if (typeof payload.type !== 'string' || !allowedActivityTypes.has(payload.type)) {
+        return new Response(
+          JSON.stringify({
+            message:
+              'new row for relation "brand_activities" violates check constraint "brand_activities_type_check"',
+          }),
+          { status: 400 },
+        );
+      }
       state.activities.unshift(payload);
       return new Response(null, { status: 201 });
     }
@@ -483,5 +500,11 @@ test('Phase 2A strategy module endpoints execute full list, get, upsert, and del
       { method: 'DELETE', headers: authHeaders },
     );
     assert.equal(deleteAgainRes.status, 404);
+
+    // Verify all activity events recorded across create, update, second module create, and delete
+    assert.deepEqual(
+      state.activities.map((a) => a.type),
+      ['module_updated', 'module_updated', 'module_completed', 'module_updated'],
+    );
   });
 });

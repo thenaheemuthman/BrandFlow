@@ -342,6 +342,24 @@ test('SupabaseStorageRepository sends owner JWT, checks ownership, syncs statuse
     }
 
     if (url.includes('/rest/v1/brand_activities') && method === 'POST') {
+      const payload = JSON.parse(body ?? '{}') as { type?: string };
+      const allowed = new Set([
+        'brand_created',
+        'brand_updated',
+        'workspace_accessed',
+        'brand_deleted',
+        'module_updated',
+        'module_completed',
+      ]);
+      if (!payload.type || !allowed.has(payload.type)) {
+        return new Response(
+          JSON.stringify({
+            message:
+              'new row for relation "brand_activities" violates check constraint "brand_activities_type_check"',
+          }),
+          { status: 400 },
+        );
+      }
       return new Response(null, { status: 201 });
     }
 
@@ -367,7 +385,18 @@ test('SupabaseStorageRepository sends owner JWT, checks ownership, syncs statuse
       /Brand not found or access denied/,
     );
 
-    // Upsert creates module, syncs brands.module_statuses preserving unrelated statuses, logs activity
+    // Create in_progress module -> emits module_updated and passes brand_activities_type_check
+    const inProgress = await repo.upsertBrandModule(brandId, 'brandFoundation', {
+      status: 'in_progress',
+      content: { mission: 'Initial positioning draft.' },
+      promptId: 'brand_foundation_core',
+      promptVersion: '1.0.0',
+      model: 'gemini-4-hydrogen',
+    });
+    assert.equal(inProgress.status, 'in_progress');
+    assert.equal(brandModuleStatuses.brandFoundation, 'in_progress');
+
+    // Update module -> completed -> emits module_completed, preserves unrelated statuses
     const saved = await repo.upsertBrandModule(brandId, 'brandFoundation', {
       status: 'completed',
       content: { values: ['Integrity'] },
@@ -423,10 +452,57 @@ test('SupabaseStorageRepository sends owner JWT, checks ownership, syncs statuse
     }
 
     const activityCalls = calls.filter((c) => c.url.includes('/rest/v1/brand_activities'));
-    assert.ok(activityCalls.length >= 2);
-    assert.match(activityCalls[0].body ?? '', /module_completed/);
+    assert.equal(activityCalls.length, 3);
+    assert.match(activityCalls[0].body ?? '', /module_updated/);
+    assert.match(activityCalls[1].body ?? '', /module_completed/);
+    assert.match(activityCalls[2].body ?? '', /module_updated/);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('brand_activities_type_check SQL constraint and schema match all Phase 1 and Phase 2A activity types', async () => {
+  const migrationSql = await fs.readFile(
+    path.resolve(process.cwd(), 'supabase/migrations/20261115_phase2a_brand_activities_module_updated.sql'),
+    'utf-8',
+  );
+  const schemaSql = await fs.readFile(
+    path.resolve(process.cwd(), 'supabase/schema.sql'),
+    'utf-8',
+  );
+
+  const expectedTypes = [
+    'brand_created',
+    'brand_updated',
+    'workspace_accessed',
+    'brand_deleted',
+    'module_updated',
+    'module_completed',
+  ];
+
+  for (const sql of [migrationSql, schemaSql]) {
+    assert.match(sql, /brand_activities_type_check/);
+    for (const activityType of expectedTypes) {
+      assert.match(sql, new RegExp(`'${activityType}'`));
+    }
+  }
+
+  // Verify Phase 1 repository flows still emit all 4 existing Phase 1 activity types
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'brandflow-phase1-activities-'));
+  try {
+    const repo = new LocalJsonStorageRepository('user-owner', 'owner@example.com', tempDir);
+    const brand = await repo.createBrand(makeBrandInput());
+    await repo.getBrand(brand.id, true);
+    await repo.updateBrand(brand.id, makeBrandInput({ brandName: 'Solstice Clinic' }));
+    await repo.deleteBrand(brand.id);
+
+    const activities = await repo.listActivities();
+    assert.deepEqual(
+      activities.map((a) => a.type),
+      ['brand_deleted', 'brand_updated', 'workspace_accessed', 'brand_created'],
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
   }
 });
 

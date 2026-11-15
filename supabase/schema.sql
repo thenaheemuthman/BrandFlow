@@ -55,7 +55,18 @@ create table if not exists public.brand_activities (
   brand_name text not null,
   type text not null,
   description text not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  constraint brand_activities_type_check
+    check (
+      type in (
+        'brand_created',
+        'brand_updated',
+        'workspace_accessed',
+        'brand_deleted',
+        'module_updated',
+        'module_completed'
+      )
+    )
 );
 
 create index if not exists idx_brand_activities_user_id on public.brand_activities (user_id, created_at desc);
