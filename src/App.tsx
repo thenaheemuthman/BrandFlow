@@ -475,6 +475,10 @@ export function App() {
                     section: 'overview',
                   })
                 }
+                onModuleSaved={async () => {
+                  await refreshOverview();
+                }}
+                onToast={showToast}
                 onRequestDelete={(brand) => setBrandToDelete(brand)}
                 onDirtyChange={setFormDirty}
               />

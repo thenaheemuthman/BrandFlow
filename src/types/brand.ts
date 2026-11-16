@@ -68,13 +68,15 @@ export type BrandValidationErrors = Partial<Record<keyof BrandFormInput, string>
 
 export type Phase2AModuleKey = 'brandFoundation' | 'brandMessaging';
 
+export type StrategyModuleKey = Phase2AModuleKey | 'customerIntelligence';
+
 export type StrategyModuleContent = Record<string, unknown>;
 
 export interface BrandStrategyModule {
   id: string;
   userId: string;
   brandId: string;
-  moduleKey: Phase2AModuleKey;
+  moduleKey: StrategyModuleKey;
   status: ModuleStatus;
   content: StrategyModuleContent;
   promptId: string | null;

@@ -13,6 +13,7 @@ import type {
   Phase2AModuleKey,
   StorageStatus,
   StrategyModuleContent,
+  StrategyModuleKey,
   UpsertBrandModuleInput,
   UserProfile,
 } from '../src/types/brand.ts';
@@ -103,27 +104,38 @@ export const PHASE_2A_MODULE_KEYS: readonly Phase2AModuleKey[] = [
   'brandMessaging',
 ];
 
+export const STRATEGY_MODULE_KEYS: readonly StrategyModuleKey[] = [
+  'brandFoundation',
+  'brandMessaging',
+  'customerIntelligence',
+];
+
 export const MODULE_STATUSES: readonly ModuleStatus[] = [
   'not_started',
   'in_progress',
   'completed',
 ];
 
-const PHASE_2A_MODULE_LABELS: Record<Phase2AModuleKey, string> = {
+const STRATEGY_MODULE_LABELS: Record<StrategyModuleKey, string> = {
   brandFoundation: 'Brand Foundation',
   brandMessaging: 'Brand Messaging',
+  customerIntelligence: 'Customer Intelligence',
 };
 
 export function isValidPhase2AModuleKey(moduleKey: string): moduleKey is Phase2AModuleKey {
   return PHASE_2A_MODULE_KEYS.includes(moduleKey as Phase2AModuleKey);
 }
 
+export function isValidStrategyModuleKey(moduleKey: string): moduleKey is StrategyModuleKey {
+  return STRATEGY_MODULE_KEYS.includes(moduleKey as StrategyModuleKey);
+}
+
 export function isValidModuleStatus(status: string): status is ModuleStatus {
   return MODULE_STATUSES.includes(status as ModuleStatus);
 }
 
-function assertValidModuleKey(moduleKey: string): asserts moduleKey is Phase2AModuleKey {
-  if (!isValidPhase2AModuleKey(moduleKey)) {
+function assertValidModuleKey(moduleKey: string): asserts moduleKey is StrategyModuleKey {
+  if (!isValidStrategyModuleKey(moduleKey)) {
     throw new ModuleValidationError(`Unsupported strategy module key: ${moduleKey}`);
   }
 }
@@ -143,10 +155,10 @@ function sanitizeModuleContent(content: unknown): StrategyModuleContent {
 
 function buildModuleActivity(
   status: ModuleStatus,
-  moduleKey: Phase2AModuleKey,
+  moduleKey: StrategyModuleKey,
   brandName: string,
 ): { type: ActivityType; description: string } {
-  const label = PHASE_2A_MODULE_LABELS[moduleKey];
+  const label = STRATEGY_MODULE_LABELS[moduleKey];
   if (status === 'completed') {
     return {
       type: 'module_completed',
@@ -173,13 +185,13 @@ export interface StorageRepository {
   updateBrand(id: string, input: BrandFormInput): Promise<Brand | null>;
   deleteBrand(id: string): Promise<boolean>;
   listBrandModules(brandId: string): Promise<BrandStrategyModule[]>;
-  getBrandModule(brandId: string, moduleKey: Phase2AModuleKey): Promise<BrandStrategyModule | null>;
+  getBrandModule(brandId: string, moduleKey: StrategyModuleKey): Promise<BrandStrategyModule | null>;
   upsertBrandModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
     data: UpsertBrandModuleInput,
   ): Promise<BrandStrategyModule>;
-  deleteBrandModule(brandId: string, moduleKey: Phase2AModuleKey): Promise<boolean>;
+  deleteBrandModule(brandId: string, moduleKey: StrategyModuleKey): Promise<boolean>;
   listActivities(brandId?: string): Promise<ActivityEvent[]>;
   getProfile(): Promise<UserProfile>;
   updateProfile(patch: Partial<UserProfile>): Promise<UserProfile>;
@@ -445,7 +457,7 @@ export class LocalJsonStorageRepository implements StorageRepository {
 
   async getBrandModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
   ): Promise<BrandStrategyModule | null> {
     assertValidModuleKey(moduleKey);
     const db = await this.readDb();
@@ -462,7 +474,7 @@ export class LocalJsonStorageRepository implements StorageRepository {
 
   async upsertBrandModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
     data: UpsertBrandModuleInput,
   ): Promise<BrandStrategyModule> {
     assertValidModuleKey(moduleKey);
@@ -538,7 +550,7 @@ export class LocalJsonStorageRepository implements StorageRepository {
 
   async deleteBrandModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
   ): Promise<boolean> {
     assertValidModuleKey(moduleKey);
 
@@ -574,7 +586,7 @@ export class LocalJsonStorageRepository implements StorageRepository {
           brand.id,
           brand.brandName,
           'module_updated',
-          `Removed ${PHASE_2A_MODULE_LABELS[moduleKey]} for ${brand.brandName}`,
+          `Removed ${STRATEGY_MODULE_LABELS[moduleKey]} for ${brand.brandName}`,
         ),
       );
       db.activities = db.activities.slice(0, 50);
@@ -669,7 +681,7 @@ interface SupabaseBrandModuleRow {
   id: string;
   user_id: string;
   brand_id: string;
-  module_key: Phase2AModuleKey;
+  module_key: StrategyModuleKey;
   status: ModuleStatus;
   content: StrategyModuleContent;
   prompt_id: string | null;
@@ -890,7 +902,7 @@ export class SupabaseStorageRepository implements StorageRepository {
 
   async getBrandModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
   ): Promise<BrandStrategyModule | null> {
     assertValidModuleKey(moduleKey);
     await this.requireOwnedBrand(brandId);
@@ -902,7 +914,7 @@ export class SupabaseStorageRepository implements StorageRepository {
 
   async upsertBrandModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
     data: UpsertBrandModuleInput,
   ): Promise<BrandStrategyModule> {
     assertValidModuleKey(moduleKey);
@@ -1009,7 +1021,7 @@ export class SupabaseStorageRepository implements StorageRepository {
 
   async deleteBrandModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
   ): Promise<boolean> {
     assertValidModuleKey(moduleKey);
     const brand = await this.requireOwnedBrand(brandId);
@@ -1051,7 +1063,7 @@ export class SupabaseStorageRepository implements StorageRepository {
         brand_id: brand.id,
         brand_name: brand.brandName,
         type: 'module_updated',
-        description: `Removed ${PHASE_2A_MODULE_LABELS[moduleKey]} for ${brand.brandName}`,
+        description: `Removed ${STRATEGY_MODULE_LABELS[moduleKey]} for ${brand.brandName}`,
       }),
     });
 

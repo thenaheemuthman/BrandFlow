@@ -109,7 +109,7 @@ create table if not exists public.brand_strategy_modules (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint chk_brand_strategy_modules_module_key
-    check (module_key in ('brandFoundation', 'brandMessaging')),
+    check (module_key in ('brandFoundation', 'brandMessaging', 'customerIntelligence')),
   constraint chk_brand_strategy_modules_status
     check (status in ('not_started', 'in_progress', 'completed')),
   constraint uq_brand_strategy_modules_brand_module

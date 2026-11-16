@@ -4,7 +4,7 @@ import {
   ModuleValidationError,
   createStorageRepository,
   isValidModuleStatus,
-  isValidPhase2AModuleKey,
+  isValidStrategyModuleKey,
   validateServerBrandInput,
 } from './storage.ts';
 import {
@@ -21,6 +21,13 @@ import type {
   UpsertBrandModuleInput,
   UserProfile,
 } from '../src/types/brand.ts';
+import {
+  BrandContextIsolationError,
+  PromptCompilationError,
+  PromptNotFoundError,
+  PromptStatusError,
+  executePrompt,
+} from '../src/prompts/index.ts';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -177,6 +184,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
 
   app.use('/api', requireOwner);
   app.use('/api/ai/generate', express.json({ limit: AI_REQUEST_BODY_LIMIT }));
+  app.use('/api/brands/:id/prompts/execute', express.json({ limit: AI_REQUEST_BODY_LIMIT }));
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/workspace/overview', async (req, res) => {
@@ -254,9 +262,10 @@ export function createApiApp(options?: CreateApiAppOptions) {
       res.status(400).json({ error: 'Invalid brand ID.' });
       return;
     }
-    if (!isValidPhase2AModuleKey(moduleKey)) {
+    if (!isValidStrategyModuleKey(moduleKey)) {
       res.status(400).json({
-        error: 'Unsupported strategy module key. Supported keys are brandFoundation and brandMessaging.',
+        error:
+          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, and customerIntelligence.',
       });
       return;
     }
@@ -279,9 +288,10 @@ export function createApiApp(options?: CreateApiAppOptions) {
       res.status(400).json({ error: 'Invalid brand ID.' });
       return;
     }
-    if (!isValidPhase2AModuleKey(moduleKey)) {
+    if (!isValidStrategyModuleKey(moduleKey)) {
       res.status(400).json({
-        error: 'Unsupported strategy module key. Supported keys are brandFoundation and brandMessaging.',
+        error:
+          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, and customerIntelligence.',
       });
       return;
     }
@@ -305,9 +315,10 @@ export function createApiApp(options?: CreateApiAppOptions) {
       res.status(400).json({ error: 'Invalid brand ID.' });
       return;
     }
-    if (!isValidPhase2AModuleKey(moduleKey)) {
+    if (!isValidStrategyModuleKey(moduleKey)) {
       res.status(400).json({
-        error: 'Unsupported strategy module key. Supported keys are brandFoundation and brandMessaging.',
+        error:
+          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, and customerIntelligence.',
       });
       return;
     }
@@ -343,6 +354,115 @@ export function createApiApp(options?: CreateApiAppOptions) {
         return;
       }
       res.status(502).json({ error: 'AI generation failed due to an upstream provider error.' });
+    }
+  });
+
+  app.post('/api/brands/:id/prompts/execute', async (req, res) => {
+    const brandId = req.params.id.trim();
+    if (!isValidBrandId(brandId)) {
+      res.status(400).json({ error: 'Invalid brand ID.' });
+      return;
+    }
+
+    const body = req.body;
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      res.status(400).json({ error: 'Request body must be a JSON object.' });
+      return;
+    }
+
+    const raw = body as Record<string, unknown>;
+    const promptId = typeof raw.promptId === 'string' ? raw.promptId.trim() : '';
+    if (!promptId) {
+      res.status(400).json({ error: 'promptId is required and must be a string.' });
+      return;
+    }
+
+    let version: string | undefined;
+    if (raw.version !== undefined && raw.version !== null) {
+      if (typeof raw.version !== 'string' || !raw.version.trim()) {
+        res.status(400).json({ error: 'version must be a non-empty string when provided.' });
+        return;
+      }
+      version = raw.version.trim();
+    }
+
+    let variables: Record<string, unknown> | undefined;
+    if (raw.variables !== undefined && raw.variables !== null) {
+      if (
+        typeof raw.variables !== 'object' ||
+        Array.isArray(raw.variables)
+      ) {
+        res.status(400).json({ error: 'variables must be a JSON object.' });
+        return;
+      }
+      variables = raw.variables as Record<string, unknown>;
+    }
+
+    const includeApprovedModules = raw.includeApprovedModules === true;
+
+    try {
+      const authReq = req as AuthenticatedRequest;
+      const storage = getStorage(req);
+      const brand = await storage.getBrand(brandId, false);
+      if (!brand) {
+        res.status(404).json({ error: 'Brand not found.' });
+        return;
+      }
+
+      const strategyModules = includeApprovedModules
+        ? await storage.listBrandModules(brandId)
+        : [];
+
+      const result = await executePrompt({
+        promptId,
+        version,
+        brandId,
+        brand,
+        expectedOwnerUserId: authReq.authenticatedUser?.id,
+        strategyModules,
+        variables,
+        executeAi: async (aiRequest) => {
+          const { data, error } = validateAiGenerateBody(aiRequest);
+          if (error || !data) {
+            throw new PromptCompilationError(error ?? 'Compiled prompt failed server validation.');
+          }
+          return generateAi(data);
+        },
+      });
+
+      if (result.status === 'missing_information') {
+        res.status(422).json(result);
+        return;
+      }
+
+      if (result.status === 'validation_error') {
+        res.status(502).json(result);
+        return;
+      }
+
+      res.json(result);
+    } catch (err) {
+      if (err instanceof PromptNotFoundError) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      if (
+        err instanceof PromptStatusError ||
+        err instanceof BrandContextIsolationError ||
+        err instanceof PromptCompilationError
+      ) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      if (
+        err instanceof GeminiConfigError ||
+        err instanceof GeminiTimeoutError ||
+        err instanceof GeminiProviderError
+      ) {
+        res.status(err.statusCode).json({ error: err.message });
+        return;
+      }
+      res.status(502).json({ error: 'Prompt execution failed due to an unexpected error.' });
     }
   });
 

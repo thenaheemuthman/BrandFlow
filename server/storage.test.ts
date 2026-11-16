@@ -8,7 +8,7 @@ import {
   SupabaseStorageRepository,
   validateServerBrandInput,
 } from './storage.ts';
-import type { BrandFormInput, Phase2AModuleKey } from '../src/types/brand.ts';
+import type { BrandFormInput, StrategyModuleKey } from '../src/types/brand.ts';
 
 function makeBrandInput(overrides: Partial<BrandFormInput> = {}): BrandFormInput {
   return {
@@ -214,7 +214,7 @@ test('LocalJsonStorageRepository enforces brand isolation, ownership, validation
       () =>
         ownerRepo.upsertBrandModule(
           brandA.id,
-          'customerIntelligence' as Phase2AModuleKey,
+          'marketingStrategy' as StrategyModuleKey,
           { status: 'in_progress', content: {} },
         ),
       /Unsupported strategy module key/,
@@ -536,7 +536,7 @@ test('LocalJsonStorageRepository deleteBrandModule removes only requested module
 
     // Unsupported key rejected
     await assert.rejects(
-      () => ownerRepo.deleteBrandModule(brand.id, 'marketingStrategy' as Phase2AModuleKey),
+      () => ownerRepo.deleteBrandModule(brand.id, 'marketingStrategy' as StrategyModuleKey),
       /Unsupported strategy module key/,
     );
 

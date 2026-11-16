@@ -6,11 +6,12 @@ import type {
   Brand,
   BrandFormInput,
   BrandStrategyModule,
-  Phase2AModuleKey,
+  StrategyModuleKey,
   UpsertBrandModuleInput,
   UserProfile,
   WorkspaceOverviewResponse,
 } from '../types/brand';
+import type { PromptExecutionResult } from '../prompts/types';
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const { data: { session } } = await supabase.auth.getSession();
@@ -88,7 +89,7 @@ export const api = {
 
   getStrategyModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
   ): Promise<{ module: BrandStrategyModule }> {
     return requestJson<{ module: BrandStrategyModule }>(
       `/api/brands/${encodeURIComponent(brandId)}/strategy-modules/${encodeURIComponent(moduleKey)}`,
@@ -97,7 +98,7 @@ export const api = {
 
   upsertStrategyModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
     input: UpsertBrandModuleInput,
   ): Promise<{ module: BrandStrategyModule }> {
     return requestJson<{ module: BrandStrategyModule }>(
@@ -111,7 +112,7 @@ export const api = {
 
   deleteStrategyModule(
     brandId: string,
-    moduleKey: Phase2AModuleKey,
+    moduleKey: StrategyModuleKey,
   ): Promise<{ deleted: boolean }> {
     return requestJson<{ deleted: boolean }>(
       `/api/brands/${encodeURIComponent(brandId)}/strategy-modules/${encodeURIComponent(moduleKey)}`,
@@ -133,5 +134,46 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  },
+
+  async executeBrandPrompt(
+    brandId: string,
+    input: {
+      promptId: string;
+      version?: string;
+      variables?: Record<string, unknown>;
+      includeApprovedModules?: boolean;
+    },
+  ): Promise<PromptExecutionResult> {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) throw new Error('Please sign in to continue.');
+
+    const response = await fetch(
+      `/api/brands/${encodeURIComponent(brandId)}/prompts/execute`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(input),
+      },
+    );
+
+    const data = await response.json().catch(() => ({}));
+
+    if (
+      response.ok ||
+      (response.status === 422 && data?.status === 'missing_information') ||
+      (response.status === 502 && data?.status === 'validation_error')
+    ) {
+      return data as PromptExecutionResult;
+    }
+
+    const message =
+      typeof data?.error === 'string' && data.error
+        ? data.error
+        : `Request failed with status ${response.status}`;
+    throw new Error(message);
   },
 };

@@ -5,6 +5,7 @@ import type {
   BrandStrategyModule,
   ModuleStatus,
   Phase2AModuleKey,
+  StrategyModuleKey,
   UpsertBrandModuleInput,
 } from '../types/brand';
 
@@ -24,7 +25,7 @@ export interface TrackedTestRecord {
   userId: string;
   brandId: string;
   brandName: string;
-  moduleKey: Phase2AModuleKey;
+  moduleKey: StrategyModuleKey;
   verificationId: string;
   phase: 'created' | 'updated';
 }

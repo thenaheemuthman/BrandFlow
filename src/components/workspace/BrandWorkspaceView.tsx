@@ -20,6 +20,7 @@ import type {
   ActivityEvent,
   Brand,
   BrandFormInput,
+  BrandStrategyModule,
   WorkspaceSection,
 } from '../../types/brand';
 import type { AppRoute } from '../../utils/router';
@@ -32,6 +33,9 @@ import {
 } from '../../utils/brandLogic';
 import { UpcomingModuleState } from '../common/UpcomingModuleState';
 import { BrandFormView } from '../brands/BrandFormView';
+import { BrandFoundationView } from './BrandFoundationView';
+import { BrandMessagingView } from './BrandMessagingView';
+import { CustomerIntelligenceView } from './CustomerIntelligenceView';
 
 interface BrandWorkspaceViewProps {
   brand: Brand;
@@ -42,6 +46,8 @@ interface BrandWorkspaceViewProps {
   onSelectSection: (section: WorkspaceSection) => void;
   onNavigate: (route: AppRoute) => void;
   onUpdateBrand: (input: BrandFormInput) => Promise<void>;
+  onModuleSaved: (module: BrandStrategyModule) => void | Promise<void>;
+  onToast: (type: 'success' | 'error', message: string) => void;
   onRequestDelete: (brand: Brand) => void;
   onDirtyChange: (dirty: boolean) => void;
 }
@@ -159,6 +165,8 @@ export function BrandWorkspaceView({
   onSelectSection,
   onNavigate,
   onUpdateBrand,
+  onModuleSaved,
+  onToast,
   onRequestDelete,
   onDirtyChange,
 }: BrandWorkspaceViewProps) {
@@ -520,7 +528,44 @@ export function BrandWorkspaceView({
             </div>
           )}
 
-          {section !== 'overview' && section !== 'brand-settings' && (
+          {section === 'brand-foundation' && (
+            <BrandFoundationView
+              key={brand.id}
+              brand={brand}
+              onModuleSaved={onModuleSaved}
+              onToast={onToast}
+              onNavigateToBrandSettings={() => onSelectSection('brand-settings')}
+            />
+          )}
+
+          {section === 'brand-messaging' && (
+            <BrandMessagingView
+              key={brand.id}
+              brand={brand}
+              onModuleSaved={onModuleSaved}
+              onToast={onToast}
+              onNavigateToBrandFoundation={() => onSelectSection('brand-foundation')}
+              onNavigateToBrandSettings={() => onSelectSection('brand-settings')}
+            />
+          )}
+
+          {section === 'customer-intelligence' && (
+            <CustomerIntelligenceView
+              key={brand.id}
+              brand={brand}
+              onModuleSaved={onModuleSaved}
+              onToast={onToast}
+              onNavigateToBrandFoundation={() => onSelectSection('brand-foundation')}
+              onNavigateToBrandMessaging={() => onSelectSection('brand-messaging')}
+              onNavigateToBrandSettings={() => onSelectSection('brand-settings')}
+            />
+          )}
+
+          {section !== 'overview' &&
+            section !== 'brand-settings' &&
+            section !== 'brand-foundation' &&
+            section !== 'brand-messaging' &&
+            section !== 'customer-intelligence' && (
             <UpcomingModuleState
               icon={UPCOMING_MODULE_COPY[section].icon}
               title={UPCOMING_MODULE_COPY[section].title}

@@ -319,7 +319,7 @@ test('Phase 2A strategy module endpoints validate brand IDs, module keys, payloa
 
     // Unsupported module key
     const badKeyRes = await fetch(
-      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/customerIntelligence`,
+      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/marketingStrategy`,
       { headers: authHeaders },
     );
     assert.equal(badKeyRes.status, 400);
@@ -731,4 +731,333 @@ test('POST /api/ai/generate returns sanitised provider errors and never exposes 
       },
     },
   );
+});
+
+test('POST /api/brands/:id/prompts/execute enforces owner auth, brand isolation, draft blocking, missing-info, and structured validation', async () => {
+  let aiCallCount = 0;
+
+  await withTestServer(
+    async (baseUrl, state) => {
+      const ownerHeaders = {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer owner-token',
+      };
+
+      // 1. Unauthenticated / non-owner rejected
+      const noAuth = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ promptId: 'brand_foundation_synthesis' }),
+        },
+      );
+      assert.equal(noAuth.status, 401);
+
+      const nonOwner = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer other-token',
+          },
+          body: JSON.stringify({ promptId: 'brand_foundation_synthesis' }),
+        },
+      );
+      assert.equal(nonOwner.status, 403);
+
+      // 2. Foreign/missing brand isolated with 404
+      const foreignBrandRes = await fetch(
+        `${baseUrl}/api/brands/${FOREIGN_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({ promptId: 'brand_foundation_synthesis' }),
+        },
+      );
+      assert.equal(foreignBrandRes.status, 404);
+
+      // 3. Draft original prompt cannot execute
+      const draftRes = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({ promptId: 'brand_foundation_core_values_discovery' }),
+        },
+      );
+      assert.equal(draftRes.status, 400);
+      assert.equal(aiCallCount, 0);
+
+      // 4. Incomplete brand returns 422 missing_information without calling AI
+      const ownedBrand = state.brands.get(OWNED_BRAND_ID)!;
+      const savedTargetMarket = ownedBrand.target_market;
+      ownedBrand.target_market = '  ';
+
+      const missingInfoRes = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({ promptId: 'brand_foundation_synthesis' }),
+        },
+      );
+      assert.equal(missingInfoRes.status, 422);
+      const missingBody = (await missingInfoRes.json()) as {
+        status: string;
+        missingVariables: string[];
+        canSave: boolean;
+      };
+      assert.equal(missingBody.status, 'missing_information');
+      assert.deepEqual(missingBody.missingVariables, ['targetMarket']);
+      assert.equal(missingBody.canSave, false);
+      assert.equal(aiCallCount, 0);
+
+      ownedBrand.target_market = savedTargetMarket;
+
+      // 5. Valid execution returns structured output + metadata
+      const successRes = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({ promptId: 'brand_foundation_synthesis' }),
+        },
+      );
+      assert.equal(successRes.status, 200);
+      const successBody = (await successRes.json()) as {
+        status: string;
+        canSave: boolean;
+        metadata: {
+          promptId: string;
+          promptVersion: string;
+          targetModule: string;
+          model: string;
+          brandId: string;
+        };
+        output: { purpose: string };
+      };
+      assert.equal(successBody.status, 'success');
+      assert.equal(successBody.canSave, true);
+      assert.equal(successBody.metadata.promptId, 'brand_foundation_synthesis');
+      assert.equal(successBody.metadata.promptVersion, '1.0.0');
+      assert.equal(successBody.metadata.targetModule, 'brandFoundation');
+      assert.equal(successBody.metadata.brandId, OWNED_BRAND_ID);
+      assert.equal(successBody.output.purpose, 'Make preventive care clear.');
+      assert.equal(aiCallCount, 1);
+
+      // Modules table was NOT mutated automatically during prompt execution
+      assert.equal(state.modules.size, 0);
+    },
+    {
+      generateAiContent: async (input) => {
+        aiCallCount += 1;
+        assert.equal(input.model, DEFAULT_GEMINI_MODEL);
+        return {
+          text: JSON.stringify({
+            suppliedFactsUsed: ['Solstice Health in Austin, TX'],
+            missingContextNotes: ['existingVision not provided'],
+            aiSuggestions: { rationale: 'Lead with preventive clarity.' },
+            purpose: 'Make preventive care clear.',
+            missionStatement: 'Deliver clinician-guided longevity insights.',
+            visionStatement: 'Preventive diagnostics as everyday healthcare.',
+            positioningStatement: 'For Austin adults seeking proactive health clarity.',
+            differentiationAttributes: ['Clinician-led', 'Biomarker tracking'],
+          }),
+          model: DEFAULT_GEMINI_MODEL,
+          generatedAt: '2026-11-15T16:00:00.000Z',
+        };
+      },
+    },
+  );
+
+  // 6. Malformed JSON response returns 502 validation_error and never auto-saves
+  await withTestServer(
+    async (baseUrl, state) => {
+      const res = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer owner-token',
+          },
+          body: JSON.stringify({ promptId: 'brand_foundation_synthesis' }),
+        },
+      );
+      assert.equal(res.status, 502);
+      const body = (await res.json()) as { status: string; canSave: boolean };
+      assert.equal(body.status, 'validation_error');
+      assert.equal(body.canSave, false);
+      assert.equal(state.modules.size, 0);
+    },
+    {
+      generateAiContent: async () => ({
+        text: 'not valid json at all',
+        model: DEFAULT_GEMINI_MODEL,
+        generatedAt: '2026-11-15T16:00:00.000Z',
+      }),
+    },
+  );
+});
+
+test('POST /api/brands/:id/prompts/execute enforces 64KB size limit and passes only approved module facts', async () => {
+  let capturedPrompt = '';
+  let capturedContext = '';
+
+  await withTestServer(
+    async (baseUrl, state) => {
+      const ownerHeaders = {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer owner-token',
+      };
+
+      // 1. Oversized request body (>64KB) rejected with 413
+      const hugeRes = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({
+            promptId: 'brand_foundation_synthesis',
+            variables: { additionalNotes: 'z'.repeat(80 * 1024) },
+          }),
+        },
+      );
+      assert.equal(hugeRes.status, 413);
+
+      // 2. Seed persisted completed brandFoundation containing an unapproved AI suggestion field
+      state.modules.set(`${OWNED_BRAND_ID}:brandFoundation`, {
+        id: '44444444-4444-4444-8444-444444444444',
+        user_id: OWNER_ID,
+        brand_id: OWNED_BRAND_ID,
+        module_key: 'brandFoundation',
+        status: 'completed',
+        content: {
+          brandId: OWNED_BRAND_ID,
+          completedAt: '2026-11-15T10:00:00.000Z',
+          approvedSummary: {
+            purpose: 'Approved Foundation Purpose Only',
+            mission: 'Approved Foundation Mission',
+            vision: 'Approved Foundation Vision',
+            coreValues: [{ name: 'Clinical Rigor', behaviors: 'Cite limits', whyItMatters: 'Trust' }],
+            positioning: 'Physician-backed clarity.',
+            differentiationAttributes: ['Clinician-led'],
+          },
+          purpose: {
+            statement: 'Approved Foundation Purpose Only',
+            aiSuggestedStatement: 'UNAPPROVED_SUGGESTION_MUST_NOT_REACH_GEMINI',
+            approved: true,
+          },
+        },
+        prompt_id: 'brand_foundation_synthesis',
+        prompt_version: '1.0.0',
+        model: DEFAULT_GEMINI_MODEL,
+        generated_at: '2026-11-15T10:00:00.000Z',
+        created_at: '2026-11-15T10:00:00.000Z',
+        updated_at: '2026-11-15T10:00:00.000Z',
+      });
+
+      const execRes = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({
+            promptId: 'brand_messaging_framework',
+            includeApprovedModules: true,
+          }),
+        },
+      );
+      assert.equal(execRes.status, 200);
+      const execBody = (await execRes.json()) as {
+        status: string;
+        metadata: { promptId: string; targetModule: string };
+      };
+      assert.equal(execBody.status, 'success');
+      assert.equal(execBody.metadata.promptId, 'brand_messaging_framework');
+      assert.equal(execBody.metadata.targetModule, 'brandMessaging');
+
+      assert.match(capturedPrompt, /Approved Foundation Purpose Only/);
+      assert.match(capturedContext, /Approved Foundation Purpose Only/);
+      assert.equal(capturedPrompt.includes('UNAPPROVED_SUGGESTION_MUST_NOT_REACH_GEMINI'), false);
+      assert.equal(capturedContext.includes('UNAPPROVED_SUGGESTION_MUST_NOT_REACH_GEMINI'), false);
+    },
+    {
+      generateAiContent: async (input) => {
+        capturedPrompt = input.prompt;
+        capturedContext = input.contextText ?? '';
+        return {
+          text: JSON.stringify({
+            suppliedFactsUsed: ['Brand Name: Solstice Health', 'Approved Brand Foundation used'],
+            missingContextNotes: [],
+            aiSuggestions: { rationale: 'Emphasize physician clarity.' },
+            coreValueProposition: 'Physician-backed biomarker clarity for Austin adults.',
+            messagingPillars: [
+              { title: 'Clinical Clarity', summary: 'Plain-language physician reports.' },
+              { title: 'Preventive Cadence', summary: 'Quarterly tracking.' },
+            ],
+            voiceAndTone: {
+              attributes: ['Calm', 'Evidence-led'],
+              guardrails: ['Avoid hype'],
+            },
+            audienceAngles: [
+              { audience: 'Austin executives', message: 'See early trends without guesswork.' },
+            ],
+          }),
+          model: DEFAULT_GEMINI_MODEL,
+          generatedAt: '2026-11-15T16:15:00.000Z',
+        };
+      },
+    },
+  );
+});
+
+test('Phase 2B customerIntelligence strategy module supports authenticated CRUD persistence', async () => {
+  await withTestServer(async (baseUrl, state) => {
+    const authHeaders = {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer owner-token',
+    };
+
+    const putRes = await fetch(
+      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/customerIntelligence`,
+      {
+        method: 'PUT',
+        headers: authHeaders,
+        body: JSON.stringify({
+          status: 'in_progress',
+          content: {
+            brandId: OWNED_BRAND_ID,
+            personas: [{ id: 'p-1', name: 'Time-Pressed Founder', approved: true }],
+            interests: [],
+          },
+          promptId: 'customer_personas_synthesis',
+          promptVersion: '1.0.0',
+          model: DEFAULT_GEMINI_MODEL,
+        }),
+      },
+    );
+    assert.equal(putRes.status, 200);
+    const putBody = (await putRes.json()) as {
+      module: { moduleKey: string; status: string };
+    };
+    assert.equal(putBody.module.moduleKey, 'customerIntelligence');
+    assert.equal(putBody.module.status, 'in_progress');
+
+    const getRes = await fetch(
+      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/customerIntelligence`,
+      { headers: authHeaders },
+    );
+    assert.equal(getRes.status, 200);
+    assert.equal(state.brands.get(OWNED_BRAND_ID)?.module_statuses.customerIntelligence, 'in_progress');
+
+    const delRes = await fetch(
+      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/customerIntelligence`,
+      { method: 'DELETE', headers: authHeaders },
+    );
+    assert.equal(delRes.status, 200);
+    assert.equal(state.brands.get(OWNED_BRAND_ID)?.module_statuses.customerIntelligence, 'not_started');
+  });
 });
