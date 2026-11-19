@@ -980,7 +980,8 @@ test('POST /api/brands/:id/prompts/execute enforces 64KB size limit and passes o
       assert.equal(execBody.metadata.targetModule, 'brandMessaging');
 
       assert.match(capturedPrompt, /Approved Foundation Purpose Only/);
-      assert.match(capturedContext, /Approved Foundation Purpose Only/);
+      assert.equal(capturedContext.includes('Approved Foundation Purpose Only'), false);
+      assert.match(capturedContext, new RegExp(OWNED_BRAND_ID));
       assert.equal(capturedPrompt.includes('UNAPPROVED_SUGGESTION_MUST_NOT_REACH_GEMINI'), false);
       assert.equal(capturedContext.includes('UNAPPROVED_SUGGESTION_MUST_NOT_REACH_GEMINI'), false);
     },
@@ -988,6 +989,7 @@ test('POST /api/brands/:id/prompts/execute enforces 64KB size limit and passes o
       generateAiContent: async (input) => {
         capturedPrompt = input.prompt;
         capturedContext = input.contextText ?? '';
+        assert.equal(input.responseMimeType, 'application/json');
         return {
           text: JSON.stringify({
             suppliedFactsUsed: ['Brand Name: Solstice Health', 'Approved Brand Foundation used'],

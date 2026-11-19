@@ -380,18 +380,75 @@ export function validateRequiredVariables(
   };
 }
 
+const MODULE_TEMPLATE_VARIABLES: Record<StrategyModuleKey, string> = {
+  brandFoundation: 'approvedBrandFoundation',
+  brandMessaging: 'approvedBrandMessaging',
+  customerIntelligence: 'approvedCustomerPersonas',
+};
+
+function extractTemplateVariableNames(template: string): Set<string> {
+  const names = new Set<string>();
+  const matches = template.matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g);
+  for (const match of matches) {
+    if (match[1]) {
+      names.add(match[1]);
+    }
+  }
+  return names;
+}
+
 export function buildApprovedContextPayload(
   verifiedContext: VerifiedBrandContext,
+  definition?: PromptDefinition,
 ): Record<string, unknown> {
-  return {
+  if (!definition) {
+    return {
+      brandId: verifiedContext.brandId,
+      brandName: verifiedContext.brandName,
+      groundingPolicy:
+        'Use only suppliedFacts and approvedStrategyModules from this exact brand workspace. Do not invent facts for missingBrandFields.',
+      suppliedFacts: verifiedContext.suppliedFacts,
+      missingBrandFields: verifiedContext.missingBrandFields,
+      approvedStrategyModules: verifiedContext.approvedStrategyModules,
+    };
+  }
+
+  const embeddedVars = extractTemplateVariableNames(definition.userPromptTemplate);
+
+  // Only include facts and approved modules not already interpolated into userPromptTemplate
+  // to avoid duplicating large JSON payloads in Gemini requests.
+  const supplementalFacts: Record<string, string> = {};
+  for (const [key, value] of Object.entries(verifiedContext.suppliedFacts)) {
+    if (!embeddedVars.has(key)) {
+      supplementalFacts[key] = value;
+    }
+  }
+
+  const supplementalModules: Record<string, unknown> = {};
+  for (const [moduleKey, mod] of Object.entries(verifiedContext.approvedStrategyModules)) {
+    if (!mod) continue;
+    const templateVar = MODULE_TEMPLATE_VARIABLES[moduleKey as StrategyModuleKey];
+    if (!templateVar || !embeddedVars.has(templateVar)) {
+      supplementalModules[moduleKey] = mod;
+    }
+  }
+
+  const payload: Record<string, unknown> = {
     brandId: verifiedContext.brandId,
     brandName: verifiedContext.brandName,
     groundingPolicy:
-      'Use only suppliedFacts and approvedStrategyModules from this exact brand workspace. Do not invent facts for missingBrandFields.',
-    suppliedFacts: verifiedContext.suppliedFacts,
+      'Use only verified brand facts and approved upstream strategy from this exact brand workspace. Do not invent facts for missingBrandFields.',
     missingBrandFields: verifiedContext.missingBrandFields,
-    approvedStrategyModules: verifiedContext.approvedStrategyModules,
   };
+
+  if (Object.keys(supplementalFacts).length > 0) {
+    payload.supplementalFacts = supplementalFacts;
+  }
+  if (Object.keys(supplementalModules).length > 0) {
+    payload.supplementalApprovedModules = supplementalModules;
+  }
+
+  return payload;
 }
 
 export function compilePromptTemplate(
@@ -440,7 +497,7 @@ export function compilePromptTemplate(
     );
   }
 
-  const contextPayload = buildApprovedContextPayload(verifiedContext);
+  const contextPayload = buildApprovedContextPayload(verifiedContext, definition);
   const serializedContext = JSON.stringify(contextPayload);
   if (serializedContext.length > ENGINE_MAX_CONTEXT_LENGTH) {
     throw new PromptCompilationError(
@@ -664,6 +721,10 @@ export async function executePrompt(
     prompt: compiled.combinedPromptText,
     context: compiled.contextPayload,
     model: compiled.model,
+    responseMimeType:
+      definition.expectedOutputStructure.format === 'json'
+        ? 'application/json'
+        : undefined,
   });
 
   const outputCheck = validateStructuredOutput(

@@ -800,6 +800,9 @@ test('customerIntelligence sanitization exposes only approved personas to custom
   assert.equal(vars.approvedCustomerPersonas.includes('INTERNAL_HYPOTHESIS_NOTE_DO_NOT_LEAK'), false);
   assert.equal(vars.approvedCustomerPersonas.includes('SPOOFED_CLIENT_PERSONA_OVERRIDE'), false);
 
+  let seenResponseMimeType: string | undefined;
+  let seenContextObj: Record<string, unknown> | undefined;
+
   const execResult = await executePrompt({
     promptId: 'customer_audience_interests',
     brandId: brand.id,
@@ -807,6 +810,8 @@ test('customerIntelligence sanitization exposes only approved personas to custom
     expectedOwnerUserId: brand.userId,
     strategyModules: [foundationModule, messagingModule, customerIntelModule],
     executeAi: async (req) => {
+      seenResponseMimeType = req.responseMimeType;
+      seenContextObj = req.context as Record<string, unknown>;
       assert.match(req.prompt, /Verified Founder Buyer/);
       assert.equal(req.prompt.includes('UNAPPROVED_DRAFT_PERSONA_DO_NOT_LEAK'), false);
       return {
@@ -836,4 +841,9 @@ test('customerIntelligence sanitization exposes only approved personas to custom
 
   assert.equal(execResult.status, 'success');
   assert.equal(execResult.targetModule, 'customerIntelligence');
+  assert.equal(seenResponseMimeType, 'application/json');
+  // Context payload should keep brandId/grounding metadata without duplicating already-interpolated modules
+  assert.equal(seenContextObj?.brandId, brand.id);
+  assert.equal(seenContextObj?.approvedStrategyModules, undefined);
+  assert.equal(seenContextObj?.supplementalApprovedModules, undefined);
 });

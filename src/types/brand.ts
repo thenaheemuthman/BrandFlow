@@ -143,10 +143,13 @@ export interface WorkspaceOverviewResponse {
 
 export type AllowedGeminiModel = 'gemini-4-hydrogen' | 'gemini-3.1-flash-lite';
 
+export type AiResponseMimeType = 'application/json' | 'text/plain';
+
 export interface AiGenerateRequest {
   prompt: string;
   context?: string | Record<string, unknown>;
   model?: AllowedGeminiModel;
+  responseMimeType?: AiResponseMimeType;
 }
 
 export interface AiGenerateResponse {
