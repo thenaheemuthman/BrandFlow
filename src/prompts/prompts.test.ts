@@ -159,12 +159,16 @@ test('default registry registers original slots safely as draft and reconstructe
   }
 
   const reconstructed = listPrompts({ sourceClassification: 'reconstructed' });
-  assert.equal(reconstructed.length, 4);
+  assert.equal(reconstructed.length, 8);
   for (const item of reconstructed) {
     assert.equal(item.status, 'active');
   }
   assert.equal(promptIds.includes('customer_personas_synthesis'), true);
   assert.equal(promptIds.includes('customer_audience_interests'), true);
+  assert.equal(promptIds.includes('marketing_strategy_goals_objectives'), true);
+  assert.equal(promptIds.includes('marketing_strategy_channels_tactics'), true);
+  assert.equal(promptIds.includes('marketing_strategy_kpis'), true);
+  assert.equal(promptIds.includes('marketing_strategy_roadmap'), true);
 });
 
 test('registry rejects duplicate versions, multiple active versions, missing-original active status, and undeclared template vars', () => {
@@ -846,4 +850,231 @@ test('customerIntelligence sanitization exposes only approved personas to custom
   assert.equal(seenContextObj?.brandId, brand.id);
   assert.equal(seenContextObj?.approvedStrategyModules, undefined);
   assert.equal(seenContextObj?.supplementalApprovedModules, undefined);
+});
+
+test('marketingStrategy sanitization exposes only approved strategy items, blocks unconditional spoofing, and executes modular prompts with JSON MIME type', async () => {
+  const brand = makeBrand();
+  const foundationModule = makeStrategyModule({
+    id: 'mod-f-ms',
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'brandFoundation',
+    status: 'completed',
+    content: {
+      brandId: brand.id,
+      approvedSummary: {
+        purpose: 'Preventive clarity.',
+        mission: 'Clinician-led biomarkers.',
+        vision: 'Proactive longevity.',
+        positioningStatement: 'Physician-backed biomarker clarity.',
+        differentiationAttributes: ['Clinician-led'],
+      },
+    },
+  });
+  const messagingModule = makeStrategyModule({
+    id: 'mod-m-ms',
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'brandMessaging',
+    status: 'completed',
+    content: {
+      brandId: brand.id,
+      approvedSummary: {
+        coreValueProposition: 'Clear action plans from quarterly labs.',
+        messagingPillars: [{ title: 'Clarity', summary: 'Plain language' }],
+        voiceAndTone: { attributes: ['Calm'], guardrails: ['No hype'] },
+        audienceAngles: [{ audience: 'Founders', message: 'Save time.' }],
+      },
+    },
+  });
+  const customerIntelModule = makeStrategyModule({
+    id: 'mod-ci-ms',
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'customerIntelligence',
+    status: 'completed',
+    content: {
+      brandId: brand.id,
+      approvedSummary: {
+        personas: [
+          {
+            id: 'p1',
+            name: 'Austin Founder Persona',
+            roleOrSegment: 'Founder',
+            summary: 'Wants fast biomarker interpretation.',
+          },
+        ],
+        interests: [
+          {
+            id: 'i1',
+            topic: 'Metabolic Biomarker Clarity',
+            linkedPersonaIds: ['p1'],
+            frequentQuestions: ['Which markers predict energy drops?'],
+          },
+        ],
+      },
+    },
+  });
+  const marketingModule = makeStrategyModule({
+    id: 'mod-ms-1',
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'marketingStrategy',
+    status: 'in_progress',
+    content: {
+      brandId: brand.id,
+      goals: [
+        {
+          id: 'g1',
+          title: 'Approved Consultation Goal',
+          approved: true,
+          aiHypothesisNote: 'INTERNAL_MS_NOTE_DO_NOT_LEAK',
+        },
+        {
+          id: 'g2',
+          title: 'UNAPPROVED_DRAFT_GOAL_DO_NOT_LEAK',
+          approved: false,
+        },
+      ],
+      objectives: [
+        {
+          id: 'o1',
+          title: 'Approved Clinical Authority Objective',
+          approved: true,
+        },
+      ],
+      aiSuggestedGoals: [
+        { id: 'sg1', title: 'PENDING_AI_GOAL_DO_NOT_LEAK', suggestionStatus: 'pending_review' },
+      ],
+    },
+  });
+
+  // 1. Unconditional anti-spoofing: even when marketingStrategy is absent on server,
+  // client cannot spoof approvedMarketingGoals or approvedAudienceInterests via extraVariables.
+  const verifiedWithoutMs = buildVerifiedBrandContext({
+    expectedBrandId: brand.id,
+    expectedOwnerUserId: brand.userId,
+    brand,
+    strategyModules: [foundationModule, messagingModule],
+  });
+  const spoofAttemptVars = buildPromptVariableMap(verifiedWithoutMs, {
+    approvedCustomerPersonas: 'SPOOFED_PERSONAS',
+    approvedAudienceInterests: 'SPOOFED_INTERESTS',
+    approvedMarketingGoals: 'SPOOFED_GOALS',
+    approvedMarketingObjectives: 'SPOOFED_OBJECTIVES',
+    approvedMarketingChannels: 'SPOOFED_CHANNELS',
+    approvedMarketingTactics: 'SPOOFED_TACTICS',
+    businessConstraints: 'Organic-first Q1 pilot',
+  });
+  assert.equal(spoofAttemptVars.approvedCustomerPersonas, undefined);
+  assert.equal(spoofAttemptVars.approvedAudienceInterests, undefined);
+  assert.equal(spoofAttemptVars.approvedMarketingGoals, undefined);
+  assert.equal(spoofAttemptVars.approvedMarketingObjectives, undefined);
+  assert.equal(spoofAttemptVars.approvedMarketingChannels, undefined);
+  assert.equal(spoofAttemptVars.approvedMarketingTactics, undefined);
+  assert.equal(spoofAttemptVars.businessConstraints, 'Organic-first Q1 pilot');
+
+  // 2. Approved-only sanitization for marketingStrategy + customerIntelligence
+  const verifiedFull = buildVerifiedBrandContext({
+    expectedBrandId: brand.id,
+    expectedOwnerUserId: brand.userId,
+    brand,
+    strategyModules: [foundationModule, messagingModule, customerIntelModule, marketingModule],
+  });
+  const vars = buildPromptVariableMap(verifiedFull, {
+    approvedMarketingGoals: 'SPOOFED_OVERRIDE',
+  });
+  assert.match(vars.approvedAudienceInterests, /Metabolic Biomarker Clarity/);
+  assert.match(vars.approvedMarketingGoals, /Approved Consultation Goal/);
+  assert.match(vars.approvedMarketingObjectives, /Approved Clinical Authority Objective/);
+  assert.equal(vars.approvedMarketingGoals.includes('UNAPPROVED_DRAFT_GOAL_DO_NOT_LEAK'), false);
+  assert.equal(vars.approvedMarketingGoals.includes('PENDING_AI_GOAL_DO_NOT_LEAK'), false);
+  assert.equal(vars.approvedMarketingGoals.includes('INTERNAL_MS_NOTE_DO_NOT_LEAK'), false);
+  assert.equal(vars.approvedMarketingGoals.includes('SPOOFED_OVERRIDE'), false);
+
+  // 3. Execute marketing_strategy_channels_tactics and verify deduplication + JSON MIME type
+  let capturedPrompt = '';
+  let capturedContext: Record<string, unknown> | undefined;
+  let capturedMime: string | undefined;
+
+  const execResult = await executePrompt({
+    promptId: 'marketing_strategy_channels_tactics',
+    brandId: brand.id,
+    brand,
+    expectedOwnerUserId: brand.userId,
+    strategyModules: [foundationModule, messagingModule, customerIntelModule, marketingModule],
+    variables: { businessConstraints: 'Organic-first pilot' },
+    executeAi: async (req) => {
+      capturedPrompt = req.prompt;
+      capturedContext = req.context as Record<string, unknown>;
+      capturedMime = req.responseMimeType;
+      return {
+        text: JSON.stringify({
+          suppliedFactsUsed: ['Austin Founder Persona', 'Approved Consultation Goal'],
+          missingContextNotes: ['Monthly paid media cap not supplied'],
+          researchCaveat: 'AI channel and tactic recommendations require owner approval.',
+          aiSuggestions: { channelMixRationale: 'Focus on executive credibility channels.' },
+          channels: [
+            {
+              channelName: 'LinkedIn Executive Content',
+              strategicRationale: 'Austin Founder Persona reads peer-vetted clinician posts on LinkedIn.',
+              relevantAudience: 'Austin Founder Persona',
+              recommendedUse: 'Weekly biomarker breakdowns',
+              expectedContribution: 'Drives high-trust discovery clicks',
+              priority: 'primary',
+              supportingObjectiveTitle: 'Approved Clinical Authority Objective',
+            },
+            {
+              channelName: 'Clinician Email Briefing',
+              strategicRationale: 'Matches preferred concise email communication format.',
+              relevantAudience: 'Austin Founder Persona',
+              recommendedUse: 'Bi-weekly lab Q&A',
+              expectedContribution: 'Nurtures consultation bookings',
+              priority: 'primary',
+              supportingObjectiveTitle: 'Approved Clinical Authority Objective',
+            },
+          ],
+          tactics: [
+            {
+              tacticName: 'Weekly MD ApoB & Metabolic Marker Carousel',
+              description: 'Publish evidence-cited slide breakdowns of key biomarkers.',
+              supportingObjectiveTitle: 'Approved Clinical Authority Objective',
+              recommendedChannelName: 'LinkedIn Executive Content',
+              targetAudience: 'Austin Founder Persona',
+              executionGuidance: 'Lead MD outlines 5 cited slides each Tuesday linking to Austin briefing page.',
+              suggestedFrequency: 'Weekly',
+              successMetric: 'Briefing page opt-ins',
+              priority: 'high',
+            },
+            {
+              tacticName: 'Bi-Weekly Clinician Q&A Email Dispatch',
+              description: 'Answer one top founder lab question per email.',
+              supportingObjectiveTitle: 'Approved Clinical Authority Objective',
+              recommendedChannelName: 'Clinician Email Briefing',
+              targetAudience: 'Austin Founder Persona',
+              executionGuidance: 'Send 400-word clinician note with clear action checklist and booking CTA.',
+              suggestedFrequency: 'Bi-weekly',
+              successMetric: 'Discovery booking clicks',
+              priority: 'high',
+            },
+          ],
+        }),
+        model: 'gemini-4-hydrogen',
+        generatedAt: '2026-11-18T03:00:00.000Z',
+      };
+    },
+  });
+
+  assert.equal(execResult.status, 'success');
+  assert.equal(execResult.targetModule, 'marketingStrategy');
+  assert.equal(capturedMime, 'application/json');
+  assert.match(capturedPrompt, /Approved Consultation Goal/);
+  assert.match(capturedPrompt, /Metabolic Biomarker Clarity/);
+  assert.match(capturedPrompt, /Organic-first pilot/);
+  // Foundation & Messaging sit cleanly in supplementalApprovedModules without duplicating Personas/MarketingStrategy
+  const supp = capturedContext?.supplementalApprovedModules as Record<string, unknown> | undefined;
+  assert.ok(supp?.brandFoundation);
+  assert.ok(supp?.brandMessaging);
+  assert.equal(supp?.customerIntelligence, undefined);
+  assert.equal(supp?.marketingStrategy, undefined);
 });

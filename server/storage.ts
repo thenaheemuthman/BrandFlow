@@ -108,6 +108,7 @@ export const STRATEGY_MODULE_KEYS: readonly StrategyModuleKey[] = [
   'brandFoundation',
   'brandMessaging',
   'customerIntelligence',
+  'marketingStrategy',
 ];
 
 export const MODULE_STATUSES: readonly ModuleStatus[] = [
@@ -120,6 +121,7 @@ const STRATEGY_MODULE_LABELS: Record<StrategyModuleKey, string> = {
   brandFoundation: 'Brand Foundation',
   brandMessaging: 'Brand Messaging',
   customerIntelligence: 'Customer Intelligence',
+  marketingStrategy: 'Marketing Strategy',
 };
 
 export function isValidPhase2AModuleKey(moduleKey: string): moduleKey is Phase2AModuleKey {

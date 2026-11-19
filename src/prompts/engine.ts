@@ -141,6 +141,70 @@ function sanitizeApprovedStrategyContent(
     }
   }
 
+  if (moduleKey === 'marketingStrategy') {
+    if (status === 'completed' && isRecord(content.approvedSummary)) {
+      return {
+        brandId: content.brandId,
+        completedAt: content.completedAt ?? null,
+        approvedSummary: content.approvedSummary,
+      };
+    }
+
+    const hasStructuredLists =
+      Array.isArray(content.goals) ||
+      Array.isArray(content.objectives) ||
+      Array.isArray(content.channels) ||
+      Array.isArray(content.tactics) ||
+      Array.isArray(content.kpis) ||
+      Array.isArray(content.roadmapItems) ||
+      Array.isArray(content.aiSuggestedGoals) ||
+      Array.isArray(content.aiSuggestedObjectives) ||
+      Array.isArray(content.aiSuggestedChannels) ||
+      Array.isArray(content.aiSuggestedTactics) ||
+      Array.isArray(content.aiSuggestedKpis) ||
+      Array.isArray(content.aiSuggestedRoadmapItems);
+
+    if (hasStructuredLists) {
+      const filterApproved = (list: unknown): Record<string, unknown>[] =>
+        (Array.isArray(list) ? list : [])
+          .filter((item): item is Record<string, unknown> => isRecord(item) && item.approved === true)
+          .map((item) => {
+            const clean = { ...item };
+            delete clean.aiHypothesisNote;
+            return clean;
+          });
+
+      const approvedGoals = filterApproved(content.goals);
+      const approvedObjectives = filterApproved(content.objectives);
+      const approvedChannels = filterApproved(content.channels);
+      const approvedTactics = filterApproved(content.tactics);
+      const approvedKpis = filterApproved(content.kpis);
+      const approvedRoadmapItems = filterApproved(content.roadmapItems);
+
+      if (
+        approvedGoals.length === 0 &&
+        approvedObjectives.length === 0 &&
+        approvedChannels.length === 0 &&
+        approvedTactics.length === 0 &&
+        approvedKpis.length === 0 &&
+        approvedRoadmapItems.length === 0
+      ) {
+        return {};
+      }
+
+      return {
+        brandId: content.brandId,
+        status,
+        goals: approvedGoals,
+        objectives: approvedObjectives,
+        channels: approvedChannels,
+        tactics: approvedTactics,
+        kpis: approvedKpis,
+        roadmapItems: approvedRoadmapItems,
+      };
+    }
+  }
+
   return content;
 }
 
@@ -295,6 +359,26 @@ export function buildPromptVariableMap(
     resolved.approvedBrandMessaging = messagingVar;
   }
 
+  const compactApprovedList = (items: readonly unknown[]): unknown[] =>
+    items.map((item) => {
+      if (!isRecord(item)) return item;
+      const clean: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(item)) {
+        if (
+          k === 'approved' ||
+          k === 'approvedAt' ||
+          k === 'source' ||
+          k === 'aiHypothesisNote'
+        ) {
+          continue;
+        }
+        if (v === '' || v === null || v === undefined) continue;
+        if (Array.isArray(v) && v.length === 0) continue;
+        clean[k] = v;
+      }
+      return clean;
+    });
+
   const customerIntelMod = verifiedContext.approvedStrategyModules.customerIntelligence;
   if (customerIntelMod && isRecord(customerIntelMod.content)) {
     const summaryPersonas =
@@ -307,7 +391,57 @@ export function buildPromptVariableMap(
       : null;
     const verifiedPersonas = summaryPersonas ?? directPersonas;
     if (verifiedPersonas && verifiedPersonas.length > 0) {
-      resolved.approvedCustomerPersonas = JSON.stringify(verifiedPersonas);
+      resolved.approvedCustomerPersonas = JSON.stringify(compactApprovedList(verifiedPersonas));
+    }
+
+    const summaryInterests =
+      isRecord(customerIntelMod.content.approvedSummary) &&
+      Array.isArray(customerIntelMod.content.approvedSummary.interests)
+        ? customerIntelMod.content.approvedSummary.interests
+        : null;
+    const directInterests = Array.isArray(customerIntelMod.content.interests)
+      ? customerIntelMod.content.interests
+      : null;
+    const verifiedInterests = summaryInterests ?? directInterests;
+    if (verifiedInterests && verifiedInterests.length > 0) {
+      resolved.approvedAudienceInterests = JSON.stringify(compactApprovedList(verifiedInterests));
+    }
+  }
+
+  const marketingMod = verifiedContext.approvedStrategyModules.marketingStrategy;
+  if (marketingMod && isRecord(marketingMod.content)) {
+    const pickMarketingList = (field: 'goals' | 'objectives' | 'channels' | 'tactics') => {
+      const summaryList =
+        isRecord(marketingMod.content.approvedSummary) &&
+        Array.isArray(marketingMod.content.approvedSummary[field])
+          ? marketingMod.content.approvedSummary[field]
+          : null;
+      const directList = Array.isArray(marketingMod.content[field])
+        ? marketingMod.content[field]
+        : null;
+      return summaryList ?? directList;
+    };
+
+    const verifiedGoals = pickMarketingList('goals');
+    if (verifiedGoals && verifiedGoals.length > 0) {
+      resolved.approvedMarketingGoals = JSON.stringify(compactApprovedList(verifiedGoals));
+    }
+
+    const verifiedObjectives = pickMarketingList('objectives');
+    if (verifiedObjectives && verifiedObjectives.length > 0) {
+      resolved.approvedMarketingObjectives = JSON.stringify(
+        compactApprovedList(verifiedObjectives),
+      );
+    }
+
+    const verifiedChannels = pickMarketingList('channels');
+    if (verifiedChannels && verifiedChannels.length > 0) {
+      resolved.approvedMarketingChannels = JSON.stringify(compactApprovedList(verifiedChannels));
+    }
+
+    const verifiedTactics = pickMarketingList('tactics');
+    if (verifiedTactics && verifiedTactics.length > 0) {
+      resolved.approvedMarketingTactics = JSON.stringify(compactApprovedList(verifiedTactics));
     }
   }
 
@@ -320,13 +454,21 @@ export function buildPromptVariableMap(
       'targetMarket',
       'primaryLocation',
     ]);
+    const protectedApprovedKeys = new Set<string>([
+      'approvedBrandFoundation',
+      'approvedBrandMessaging',
+      'approvedCustomerPersonas',
+      'approvedAudienceInterests',
+      'approvedMarketingGoals',
+      'approvedMarketingObjectives',
+      'approvedMarketingChannels',
+      'approvedMarketingTactics',
+    ]);
 
     for (const [key, rawValue] of Object.entries(extraVariables)) {
       if (rawValue === undefined || rawValue === null) continue;
       if (protectedFactKeys.has(key) && resolved[key]) continue;
-      if (key === 'approvedBrandFoundation' && resolved.approvedBrandFoundation) continue;
-      if (key === 'approvedBrandMessaging' && resolved.approvedBrandMessaging) continue;
-      if (key === 'approvedCustomerPersonas' && resolved.approvedCustomerPersonas) continue;
+      if (protectedApprovedKeys.has(key)) continue;
 
       let serializedValue = '';
       if (typeof rawValue === 'string') {
@@ -380,10 +522,16 @@ export function validateRequiredVariables(
   };
 }
 
-const MODULE_TEMPLATE_VARIABLES: Record<StrategyModuleKey, string> = {
-  brandFoundation: 'approvedBrandFoundation',
-  brandMessaging: 'approvedBrandMessaging',
-  customerIntelligence: 'approvedCustomerPersonas',
+const MODULE_TEMPLATE_VARIABLES: Record<StrategyModuleKey, readonly string[]> = {
+  brandFoundation: ['approvedBrandFoundation'],
+  brandMessaging: ['approvedBrandMessaging'],
+  customerIntelligence: ['approvedCustomerPersonas', 'approvedAudienceInterests'],
+  marketingStrategy: [
+    'approvedMarketingGoals',
+    'approvedMarketingObjectives',
+    'approvedMarketingChannels',
+    'approvedMarketingTactics',
+  ],
 };
 
 function extractTemplateVariableNames(template: string): Set<string> {
@@ -427,8 +575,9 @@ export function buildApprovedContextPayload(
   const supplementalModules: Record<string, unknown> = {};
   for (const [moduleKey, mod] of Object.entries(verifiedContext.approvedStrategyModules)) {
     if (!mod) continue;
-    const templateVar = MODULE_TEMPLATE_VARIABLES[moduleKey as StrategyModuleKey];
-    if (!templateVar || !embeddedVars.has(templateVar)) {
+    const templateVars = MODULE_TEMPLATE_VARIABLES[moduleKey as StrategyModuleKey] ?? [];
+    const alreadyEmbedded = templateVars.some((varName) => embeddedVars.has(varName));
+    if (!alreadyEmbedded) {
       supplementalModules[moduleKey] = mod;
     }
   }

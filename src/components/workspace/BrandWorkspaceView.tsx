@@ -36,6 +36,7 @@ import { BrandFormView } from '../brands/BrandFormView';
 import { BrandFoundationView } from './BrandFoundationView';
 import { BrandMessagingView } from './BrandMessagingView';
 import { CustomerIntelligenceView } from './CustomerIntelligenceView';
+import { MarketingStrategyView } from './MarketingStrategyView';
 
 interface BrandWorkspaceViewProps {
   brand: Brand;
@@ -561,11 +562,27 @@ export function BrandWorkspaceView({
             />
           )}
 
+          {section === 'marketing-strategy' && (
+            <MarketingStrategyView
+              key={brand.id}
+              brand={brand}
+              onModuleSaved={onModuleSaved}
+              onToast={onToast}
+              onNavigateToBrandFoundation={() => onSelectSection('brand-foundation')}
+              onNavigateToBrandMessaging={() => onSelectSection('brand-messaging')}
+              onNavigateToCustomerIntelligence={() =>
+                onSelectSection('customer-intelligence')
+              }
+              onNavigateToBrandSettings={() => onSelectSection('brand-settings')}
+            />
+          )}
+
           {section !== 'overview' &&
             section !== 'brand-settings' &&
             section !== 'brand-foundation' &&
             section !== 'brand-messaging' &&
-            section !== 'customer-intelligence' && (
+            section !== 'customer-intelligence' &&
+            section !== 'marketing-strategy' && (
             <UpcomingModuleState
               icon={UPCOMING_MODULE_COPY[section].icon}
               title={UPCOMING_MODULE_COPY[section].title}

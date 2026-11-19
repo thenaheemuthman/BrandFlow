@@ -265,7 +265,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
     if (!isValidStrategyModuleKey(moduleKey)) {
       res.status(400).json({
         error:
-          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, and customerIntelligence.',
+          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, customerIntelligence, and marketingStrategy.',
       });
       return;
     }
@@ -291,7 +291,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
     if (!isValidStrategyModuleKey(moduleKey)) {
       res.status(400).json({
         error:
-          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, and customerIntelligence.',
+          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, customerIntelligence, and marketingStrategy.',
       });
       return;
     }
@@ -318,7 +318,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
     if (!isValidStrategyModuleKey(moduleKey)) {
       res.status(400).json({
         error:
-          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, and customerIntelligence.',
+          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, customerIntelligence, and marketingStrategy.',
       });
       return;
     }

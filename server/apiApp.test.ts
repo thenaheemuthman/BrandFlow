@@ -319,7 +319,7 @@ test('Phase 2A strategy module endpoints validate brand IDs, module keys, payloa
 
     // Unsupported module key
     const badKeyRes = await fetch(
-      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/marketingStrategy`,
+      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/contentStrategy`,
       { headers: authHeaders },
     );
     assert.equal(badKeyRes.status, 400);
@@ -1061,5 +1061,59 @@ test('Phase 2B customerIntelligence strategy module supports authenticated CRUD 
     );
     assert.equal(delRes.status, 200);
     assert.equal(state.brands.get(OWNED_BRAND_ID)?.module_statuses.customerIntelligence, 'not_started');
+  });
+});
+
+test('Phase 2B marketingStrategy module supports authenticated CRUD persistence', async () => {
+  await withTestServer(async (baseUrl, state) => {
+    const authHeaders = {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer owner-token',
+    };
+
+    const putRes = await fetch(
+      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/marketingStrategy`,
+      {
+        method: 'PUT',
+        headers: authHeaders,
+        body: JSON.stringify({
+          status: 'in_progress',
+          content: {
+            brandId: OWNED_BRAND_ID,
+            goals: [{ id: 'g-1', title: 'Grow Austin Consultations', approved: true }],
+            objectives: [],
+          },
+          promptId: 'marketing_strategy_goals_objectives',
+          promptVersion: '1.0.0',
+          model: DEFAULT_GEMINI_MODEL,
+        }),
+      },
+    );
+    assert.equal(putRes.status, 200);
+    const putBody = (await putRes.json()) as {
+      module: { moduleKey: string; status: string };
+    };
+    assert.equal(putBody.module.moduleKey, 'marketingStrategy');
+    assert.equal(putBody.module.status, 'in_progress');
+
+    const getRes = await fetch(
+      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/marketingStrategy`,
+      { headers: authHeaders },
+    );
+    assert.equal(getRes.status, 200);
+    assert.equal(
+      state.brands.get(OWNED_BRAND_ID)?.module_statuses.marketingStrategy,
+      'in_progress',
+    );
+
+    const delRes = await fetch(
+      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/marketingStrategy`,
+      { method: 'DELETE', headers: authHeaders },
+    );
+    assert.equal(delRes.status, 200);
+    assert.equal(
+      state.brands.get(OWNED_BRAND_ID)?.module_statuses.marketingStrategy,
+      'not_started',
+    );
   });
 });

@@ -209,12 +209,22 @@ test('LocalJsonStorageRepository enforces brand isolation, ownership, validation
       /Brand not found or access denied/,
     );
 
+    // Marketing Strategy module persists cleanly and updates brand module status
+    const msMod = await ownerRepo.upsertBrandModule(brandA.id, 'marketingStrategy', {
+      status: 'in_progress',
+      content: { goals: [{ id: 'g1', title: 'Grow pipeline', approved: true }] },
+      promptId: 'marketing_strategy_goals_objectives',
+      promptVersion: '1.0.0',
+    });
+    assert.equal(msMod.moduleKey, 'marketingStrategy');
+    assert.equal(msMod.status, 'in_progress');
+
     // Invalid module keys & invalid content rejected
     await assert.rejects(
       () =>
         ownerRepo.upsertBrandModule(
           brandA.id,
-          'marketingStrategy' as StrategyModuleKey,
+          'contentStrategy' as StrategyModuleKey,
           { status: 'in_progress', content: {} },
         ),
       /Unsupported strategy module key/,
@@ -536,7 +546,7 @@ test('LocalJsonStorageRepository deleteBrandModule removes only requested module
 
     // Unsupported key rejected
     await assert.rejects(
-      () => ownerRepo.deleteBrandModule(brand.id, 'marketingStrategy' as StrategyModuleKey),
+      () => ownerRepo.deleteBrandModule(brand.id, 'contentStrategy' as StrategyModuleKey),
       /Unsupported strategy module key/,
     );
 
