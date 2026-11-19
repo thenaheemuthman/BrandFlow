@@ -1,16 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Brand, BrandStrategyModule } from '../types/brand.ts';
+import { parsePromptExecutionResponse } from '../services/promptResponseParser.ts';
 import {
   BrandContextIsolationError,
   DEFAULT_PROMPT_DEFINITIONS,
   DEFAULT_PROMPT_REGISTRY,
+  ENGINE_MAX_CONTEXT_LENGTH,
+  ENGINE_MAX_PROMPT_LENGTH,
   PromptNotFoundError,
   PromptRegistryError,
   PromptStatusError,
   buildPromptVariableMap,
   buildStrategyModuleUpsertInput,
   buildVerifiedBrandContext,
+  compactApprovedList,
   compilePromptTemplate,
   createPromptRegistry,
   executePrompt,
@@ -1078,3 +1082,1085 @@ test('marketingStrategy sanitization exposes only approved strategy items, block
   assert.equal(supp?.customerIntelligence, undefined);
   assert.equal(supp?.marketingStrategy, undefined);
 });
+
+test('compactApprovedList strips internal metadata/empty objects, rejects unapproved records, and preserves relationships', () => {
+  const compactedPersonas = compactApprovedList(
+    [
+      {
+        id: 'persona-uuid-1',
+        name: 'B2B Agency Founder',
+        roleOrSegment: 'Founder',
+        summary: '  Wants repeatable inbound pipeline.  ',
+        painPoints: ['Feast-or-famine referrals', 'feast-or-famine referrals', '   ', 'Generic agency copy'],
+        informationSources: ['LinkedIn', 'Operator Newsletters'],
+        demographicsRelevant: false,
+        demographics: { ageRange: '30-50' },
+        source: 'ai_adopted',
+        approved: true,
+        approvedAt: '2026-11-18T00:00:00.000Z',
+        aiHypothesisNote: 'INTERNAL_NOTE_STRIPPED',
+      },
+      {
+        id: 'persona-uuid-2',
+        name: 'UNAPPROVED_PERSONA_EXCLUDED',
+        approved: false,
+      },
+      {
+        id: 'persona-uuid-3',
+        name: 'Enterprise Ops Director',
+        demographicsRelevant: true,
+        demographics: { location: 'North America', emptyField: '   ' },
+        approved: true,
+      },
+    ],
+    { kind: 'persona' },
+  );
+
+  assert.equal(compactedPersonas.length, 2);
+  assert.equal(compactedPersonas[0].id, undefined);
+  assert.equal(compactedPersonas[0].approved, undefined);
+  assert.equal(compactedPersonas[0].approvedAt, undefined);
+  assert.equal(compactedPersonas[0].source, undefined);
+  assert.equal(compactedPersonas[0].aiHypothesisNote, undefined);
+  assert.equal(compactedPersonas[0].demographicsRelevant, undefined);
+  assert.equal(compactedPersonas[0].demographics, undefined);
+  assert.deepEqual(compactedPersonas[0].painPoints, ['Feast-or-famine referrals', 'Generic agency copy']);
+  assert.deepEqual(compactedPersonas[1].demographics, { location: 'North America' });
+
+  const compactedTactics = compactApprovedList(
+    [
+      {
+        id: 'tactic-uuid-1',
+        tacticName: 'Weekly Positioning Tear-Down',
+        priority: 'high',
+        supportingObjectiveId: 'obj-uuid-1',
+        supportingObjectiveTitle: 'Capture High-Intent Founder Attention',
+        recommendedChannelId: 'ch-uuid-1',
+        recommendedChannelName: 'LinkedIn Executive Editorial',
+        approved: true,
+      },
+    ],
+    { kind: 'tactic' },
+  );
+
+  assert.equal(compactedTactics.length, 1);
+  assert.equal(compactedTactics[0].id, undefined);
+  assert.equal(compactedTactics[0].supportingObjectiveId, undefined);
+  assert.equal(compactedTactics[0].recommendedChannelId, undefined);
+  assert.equal(compactedTactics[0].supportingObjectiveTitle, 'Capture High-Intent Founder Attention');
+  assert.equal(compactedTactics[0].recommendedChannelName, 'LinkedIn Executive Editorial');
+});
+
+test('regression: marketing_strategy_channels_tactics stays below 12000-char limit under large combined upstream context without duplication or unapproved leakage', () => {
+  // Confirm server limit constant has NOT been raised or bypassed
+  assert.equal(ENGINE_MAX_PROMPT_LENGTH, 12_000);
+  assert.equal(ENGINE_MAX_CONTEXT_LENGTH, 24_000);
+
+  const now = '2026-11-18T00:00:00.000Z';
+  const brand = makeBrand({
+    id: 'brand-large-ctx-1',
+    userId: 'owner-1',
+    brandName: 'The Naheem Uthman',
+    businessDescription:
+      'Strategic brand consulting and AI-enabled content operations advisory helping B2B service founders turn scattered marketing into repeatable growth systems.',
+    industry: 'Brand Strategy & B2B Marketing Advisory',
+    productsOrServices:
+      'Brand Strategy Sprints, Executive Thought Leadership Systems, Content Operations Retainers, and AI Workflow Audits',
+    targetMarket:
+      'B2B founders, agency principals, and solo consultants earning $250k to $5M annually who struggle to translate expertise into consistent inbound pipeline',
+    primaryLocation: 'Lagos, Nigeria & Global Remote (UK/US/EMEA)',
+    marketingChallenges:
+      'Inconsistent content output, difficulty differentiating from generic marketing agencies, and limited founder time to manage multi-channel campaigns.',
+    businessGoals:
+      'Build a predictable pipeline of qualified strategy sprint and advisory retainer inquiries over the next two quarters.',
+    competitors: 'Generic social media agencies, fractional CMO consultancies, DIY AI copywriting tools',
+    additionalNotes:
+      'Prefer high-trust authority channels and transparent proof-driven education over hype.',
+  });
+
+  const foundationModule = makeStrategyModule({
+    id: 'mod-f-large',
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'brandFoundation',
+    status: 'completed',
+    content: {
+      schemaVersion: 1,
+      brandId: brand.id,
+      completedAt: now,
+      approvedSummary: {
+        purposeStatement: 'VERBOSE_PURPOSE_NOT_NEEDED_FOR_CHANNELS_SELECTION '.repeat(12),
+        missionStatement: 'VERBOSE_MISSION_NOT_NEEDED_FOR_CHANNELS_SELECTION '.repeat(12),
+        visionStatement: 'VERBOSE_VISION_NOT_NEEDED_FOR_CHANNELS_SELECTION '.repeat(12),
+        coreValues: [
+          { id: 'v1', name: 'Strategic Clarity', behaviors: 'Start from verified insight', whyItMatters: 'Saves spend' },
+        ],
+        positioningStatement:
+          'For B2B founders tired of fragmented marketing, The Naheem Uthman turns domain expertise into structured brand strategy and compounding inbound demand.',
+        differentiationAttributes: ['Strategy-first architecture', 'Founder-feasible workflows'],
+        approvedAt: now,
+      },
+    },
+  });
+
+  const messagingModule = makeStrategyModule({
+    id: 'mod-m-large',
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'brandMessaging',
+    status: 'completed',
+    content: {
+      schemaVersion: 1,
+      brandId: brand.id,
+      completedAt: now,
+      approvedSummary: {
+        coreValueProposition:
+          'Transform scattered founder expertise into a clear positioning architecture and predictable B2B inbound content engine.',
+        messagingPillars: [
+          { id: 'p1', title: 'Clarity Before Channels', summary: 'Fix positioning before content distribution.' },
+          { id: 'p2', title: 'Proof-Led Authority', summary: 'Demonstrate real frameworks and case breakdowns.' },
+        ],
+        voiceAndTone: {
+          attributes: ['Sharp', 'Consultative', 'Practical'],
+          guardrails: ['No empty guru hype', 'No fabricated revenue promises'],
+        },
+        audienceAngles: [
+          { id: 'a1', audience: 'B2B Service Founders', message: 'Turn expertise into repeatable inbound demand.' },
+        ],
+        approvedAt: now,
+      },
+    },
+  });
+
+  const approvedPersonas = Array.from({ length: 6 }, (_, idx) => {
+    const i = idx + 1;
+    return {
+      id: `persona-uuid-000${i}`,
+      name: `Approved Persona ${i}: Growth-Stage B2B Founder`,
+      roleOrSegment: `B2B Consultancy Principal Segment ${i}`,
+      summary:
+        'Experienced domain expert whose revenue comes mostly from word-of-mouth referrals and who wants predictable inbound demand without becoming a full-time social media influencer.',
+      goals: [
+        `Build consistent inbound discovery calls for segment ${i}`,
+        'Articulate a sharp market position that commands premium retainers',
+        'Run a lean repeatable weekly content workflow in under 4 hours',
+      ],
+      painPoints: [
+        `Unpredictable referral pipeline in segment ${i}`,
+        'Previous agency retainers produced generic content that failed to convert decision-makers',
+        'Struggling to translate complex client delivery into concise public thought leadership',
+      ],
+      motivations: ['Long-term business stability and pricing power'],
+      objections: ['Skeptical of marketing consultants who promise overnight viral leads'],
+      purchasingTriggers: [
+        'Losing a major referral client or hitting a pipeline plateau',
+        'Launching a higher-ticket advisory offer that requires stronger market positioning',
+      ],
+      decisionFactors: ['Demonstrated strategic depth in public frameworks', 'Low founder time overhead'],
+      informationSources: [
+        'LinkedIn executive feeds',
+        'Long-form B2B strategy newsletters',
+        'Founder podcasts and peer Slack communities',
+      ],
+      communicationPreferences: ['Concise analytical breakdowns', 'Real-world case tear-downs'],
+      demographicsRelevant: false,
+      demographics: {},
+      source: 'ai_adopted',
+      approved: true,
+      approvedAt: now,
+    };
+  });
+
+  const approvedInterests = Array.from({ length: 10 }, (_, idx) => {
+    const i = idx + 1;
+    return {
+      id: `interest-uuid-000${i}`,
+      topic: `Approved Interest Cluster ${i}: B2B Positioning & Pipeline Architecture`,
+      linkedPersonaIds: ['persona-uuid-0001', 'persona-uuid-0002'],
+      frequentQuestions: [
+        'How do I stand out when every competitor claims similar outcomes?',
+        'What content formats actually influence B2B buyers before they book a call?',
+      ],
+      problemsToSolve: [
+        `Generic brand messaging blending into market ${i}`,
+        'Posting content that gets peer likes but zero buyer inquiries',
+        'Lack of structured workflow from strategy to weekly publishing',
+      ],
+      contentConsumed: [
+        'Deep-dive LinkedIn carousels and text frameworks',
+        'Weekly strategic operator newsletters',
+        'Before-and-after messaging tear-downs',
+      ],
+      searchTopics: [
+        `b2b brand positioning framework ${i}`,
+        'founder led marketing strategy b2b',
+        'generate inbound consulting leads without cold outreach',
+      ],
+      productOrServiceInterests: ['Brand strategy sprints', 'Messaging architecture playbooks'],
+      purchaseTriggers: ['Preparing for a flagship offer launch', 'Pipeline plateau'],
+      concernsOrObjections: ['Sounding overly salesy or robotic'],
+      seasonalOrSituationalInterests: ['Q1 annual planning resets'],
+      source: 'ai_adopted',
+      approved: true,
+      approvedAt: now,
+    };
+  });
+
+  const customerIntelModule = makeStrategyModule({
+    id: 'mod-ci-large',
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'customerIntelligence',
+    status: 'in_progress',
+    content: {
+      schemaVersion: 1,
+      brandId: brand.id,
+      personas: [
+        ...approvedPersonas,
+        {
+          id: 'persona-unapproved',
+          name: 'UNAPPROVED_PERSONA_MUST_NOT_APPEAR',
+          summary: 'Draft persona that must never leak',
+          approved: false,
+        },
+      ],
+      interests: [
+        ...approvedInterests,
+        {
+          id: 'interest-unapproved',
+          topic: 'UNAPPROVED_INTEREST_MUST_NOT_APPEAR',
+          approved: false,
+        },
+      ],
+      aiSuggestedPersonas: [{ id: 'sp-1', name: 'PENDING_SUGGESTED_PERSONA_MUST_NOT_APPEAR' }],
+      aiSuggestedInterests: [{ id: 'si-1', topic: 'PENDING_SUGGESTED_INTEREST_MUST_NOT_APPEAR' }],
+    },
+  });
+
+  const approvedGoals = Array.from({ length: 6 }, (_, idx) => {
+    const i = idx + 1;
+    return {
+      id: `goal-uuid-000${i}`,
+      title: `SMART Goal ${i}: Build Predictable Inbound Pipeline`,
+      description:
+        'Generate qualified inbound inquiries from B2B service founders and consultancy partners through proof-led strategic positioning content.',
+      strategicRationale:
+        'Directly addresses the core referral dependency challenge while leveraging verified founder expertise.',
+      targetAudience: 'B2B service founders and consultancy managing partners ($250k-$5M)',
+      supportingBusinessObjective: 'Build a predictable pipeline of qualified strategy sprint inquiries.',
+      successMetrics: ['Qualified strategy sprint discovery calls booked', 'Inbound framework inquiries'],
+      targetValue: 'Establish 30-day baseline first',
+      measurementPeriod: 'Monthly tracking with quarterly strategic review',
+      recommendedTimeframe: 'Next 2 quarters',
+      source: 'ai_adopted',
+      approved: true,
+      approvedAt: now,
+    };
+  });
+
+  const approvedObjectives = [
+    {
+      id: 'obj-low-1',
+      title: 'Low Priority Objective: Repurpose Archived Notes',
+      description: 'Repurpose older archived workshop notes into reference guides.',
+      intendedBusinessOutcome: 'Maintain archive visibility.',
+      targetAudience: 'Existing followers',
+      supportingGoalId: 'goal-uuid-0006',
+      supportingGoalTitle: 'SMART Goal 6: Build Predictable Inbound Pipeline',
+      measurementCriteria: 'Archive views per quarter.',
+      priority: 'low',
+      approved: true,
+      approvedAt: now,
+    },
+    ...Array.from({ length: 5 }, (_, idx) => {
+      const i = idx + 1;
+      return {
+        id: `obj-high-${i}`,
+        title: `High Priority Objective ${i}: Convert B2B Founders Into Strategy Sprints`,
+        description:
+          'Consistently publish concrete positioning tear-downs and structured B2B demand frameworks that move buyers to direct inquiry.',
+        intendedBusinessOutcome:
+          'Increase qualified executive inbound conversations while reducing reliance on unpredictable referrals.',
+        targetAudience: 'B2B founders and boutique agency principals',
+        supportingGoalId: 'goal-uuid-0001',
+        supportingGoalTitle: 'SMART Goal 1: Build Predictable Inbound Pipeline',
+        measurementCriteria: 'Qualified inbound discovery calls attributed to published frameworks.',
+        priority: i <= 3 ? 'high' : 'medium',
+        approved: true,
+        approvedAt: now,
+      };
+    }),
+  ];
+
+  const marketingModule = makeStrategyModule({
+    id: 'mod-ms-large',
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'marketingStrategy',
+    status: 'in_progress',
+    content: {
+      schemaVersion: 1,
+      brandId: brand.id,
+      goals: [
+        ...approvedGoals,
+        { id: 'goal-unapproved', title: 'UNAPPROVED_GOAL_MUST_NOT_APPEAR', approved: false },
+      ],
+      objectives: [
+        ...approvedObjectives,
+        { id: 'obj-unapproved', title: 'UNAPPROVED_OBJECTIVE_MUST_NOT_APPEAR', approved: false },
+      ],
+      aiSuggestedGoals: [{ id: 'sg-1', title: 'PENDING_AI_GOAL_MUST_NOT_APPEAR' }],
+      aiSuggestedObjectives: [{ id: 'so-1', title: 'PENDING_AI_OBJECTIVE_MUST_NOT_APPEAR' }],
+      channels: [],
+      tactics: [],
+      kpis: [],
+      roadmapItems: [],
+    },
+  });
+
+  // Verify the raw combined payload genuinely reproduces the >12,000-character overflow condition
+  const unoptimizedSize =
+    JSON.stringify(approvedPersonas).length +
+    JSON.stringify(approvedInterests).length +
+    JSON.stringify(approvedGoals).length +
+    JSON.stringify(approvedObjectives).length;
+  assert.ok(
+    unoptimizedSize > ENGINE_MAX_PROMPT_LENGTH,
+    `Expected unoptimized upstream payload (${unoptimizedSize}) to exceed ${ENGINE_MAX_PROMPT_LENGTH} chars to reproduce the bug`,
+  );
+
+  const verified = buildVerifiedBrandContext({
+    expectedBrandId: brand.id,
+    expectedOwnerUserId: brand.userId,
+    brand,
+    strategyModules: [foundationModule, messagingModule, customerIntelModule, marketingModule],
+  });
+
+  const def = resolveExecutablePrompt('marketing_strategy_channels_tactics');
+  const compiled = compilePromptTemplate(def, verified, {
+    businessConstraints: 'Organic-first lean team (3 hrs/week)',
+    // Echoing brand.additionalNotes must NOT produce duplicate "note | note"
+    additionalNotes: brand.additionalNotes,
+    // Spoofing attempts must still be blocked
+    approvedMarketingObjectives: 'SPOOFED_OBJECTIVE_OVERRIDE',
+    approvedCustomerPersonas: 'SPOOFED_PERSONA_OVERRIDE',
+  });
+
+  // 1. Prompt and context stay comfortably within unchanged server limits
+  assert.ok(
+    compiled.combinedPromptText.length < ENGINE_MAX_PROMPT_LENGTH,
+    `Expected compiled prompt (${compiled.combinedPromptText.length}) < ${ENGINE_MAX_PROMPT_LENGTH}`,
+  );
+  const serializedCtx = JSON.stringify(compiled.contextPayload);
+  assert.ok(
+    serializedCtx.length < ENGINE_MAX_CONTEXT_LENGTH,
+    `Expected contextPayload (${serializedCtx.length}) < ${ENGINE_MAX_CONTEXT_LENGTH}`,
+  );
+
+  // 2. Priority 1 (high-priority approved objectives) preserved ahead of low-priority items, with goal linkage intact
+  const highIdx = compiled.compiledUserPrompt.indexOf('High Priority Objective 1');
+  const lowIdx = compiled.compiledUserPrompt.indexOf('Low Priority Objective');
+  assert.ok(highIdx !== -1, 'High priority approved objective must be preserved');
+  if (lowIdx !== -1) {
+    assert.ok(highIdx < lowIdx, 'High priority objectives must be prioritized ahead of low priority objectives');
+  }
+  assert.match(compiled.compiledUserPrompt, /SMART Goal 1: Build Predictable Inbound Pipeline/);
+
+  // 3. Approved persona names & channel cues and approved interest topics remain present
+  assert.match(compiled.compiledUserPrompt, /Approved Persona 1/);
+  assert.match(compiled.compiledUserPrompt, /LinkedIn executive feeds/);
+  assert.match(compiled.compiledUserPrompt, /Approved Interest Cluster 1/);
+
+  // 4. Duplicate elimination: additionalNotes appears once (not "note | note") and no module duplication in contextPayload
+  const noteOccurrences = compiled.compiledUserPrompt.split(
+    'Prefer high-trust authority channels and transparent proof-driven education over hype.',
+  ).length - 1;
+  assert.equal(noteOccurrences, 1, 'additionalNotes must not be duplicated');
+
+  const supp = compiled.contextPayload.supplementalApprovedModules as Record<string, unknown>;
+  assert.ok(supp?.brandFoundation);
+  assert.ok(supp?.brandMessaging);
+  assert.equal(supp?.customerIntelligence, undefined);
+  assert.equal(supp?.marketingStrategy, undefined);
+  const serializedSupp = JSON.stringify(supp);
+  assert.match(serializedSupp, /structured brand strategy and compounding inbound demand/);
+  assert.match(serializedSupp, /Clarity Before Channels/);
+  assert.match(serializedSupp, /Consultative/);
+  assert.equal(serializedSupp.includes('VERBOSE_PURPOSE_NOT_NEEDED'), false);
+  assert.equal(serializedSupp.includes('VERBOSE_MISSION_NOT_NEEDED'), false);
+  assert.equal(serializedSupp.includes('VERBOSE_VISION_NOT_NEEDED'), false);
+
+  // 5. Strict approved-only & anti-spoofing guarantees
+  for (const forbidden of [
+    'UNAPPROVED_PERSONA_MUST_NOT_APPEAR',
+    'UNAPPROVED_INTEREST_MUST_NOT_APPEAR',
+    'PENDING_SUGGESTED_PERSONA_MUST_NOT_APPEAR',
+    'PENDING_SUGGESTED_INTEREST_MUST_NOT_APPEAR',
+    'UNAPPROVED_GOAL_MUST_NOT_APPEAR',
+    'UNAPPROVED_OBJECTIVE_MUST_NOT_APPEAR',
+    'PENDING_AI_GOAL_MUST_NOT_APPEAR',
+    'PENDING_AI_OBJECTIVE_MUST_NOT_APPEAR',
+    'SPOOFED_OBJECTIVE_OVERRIDE',
+    'SPOOFED_PERSONA_OVERRIDE',
+  ]) {
+    assert.equal(compiled.combinedPromptText.includes(forbidden), false, `Forbidden string leaked into prompt: ${forbidden}`);
+    assert.equal(serializedCtx.includes(forbidden), false, `Forbidden string leaked into context: ${forbidden}`);
+  }
+
+  // 6. Cross-brand isolation remains strictly enforced
+  const foreignModule = makeStrategyModule({
+    id: 'mod-foreign',
+    brandId: 'brand-other-999',
+    userId: brand.userId,
+    moduleKey: 'marketingStrategy',
+  });
+  assert.throws(
+    () =>
+      buildVerifiedBrandContext({
+        expectedBrandId: brand.id,
+        expectedOwnerUserId: brand.userId,
+        brand,
+        strategyModules: [foundationModule, messagingModule, customerIntelModule, foreignModule],
+      }),
+    BrandContextIsolationError,
+  );
+});
+
+test('regression: parsePromptExecutionResponse never collapses preview Nginx 200 HTML into {} and surfaces sanitized errors', () => {
+  // Exact failure reproduced in Google AI Studio preview when Nginx intercepts 502/503/504 with /warmup.html as HTTP 200 OK
+  assert.throws(
+    () =>
+      parsePromptExecutionResponse({
+        ok: true,
+        status: 200,
+        contentType: 'text/html; charset=utf-8',
+        bodyText: '<!doctype html><html><head><title>Starting Server...</title></head><body>Starting Server...</body></html>',
+      }),
+    /temporary server gateway response instead of JSON/i,
+  );
+
+  // HTTP 500 JSON returned behind preview Nginx surfaces real sanitized error message
+  assert.throws(
+    () =>
+      parsePromptExecutionResponse({
+        ok: false,
+        status: 500,
+        contentType: 'application/json',
+        bodyText: JSON.stringify({
+          error: 'AI generation timed out. Please try again.',
+          upstreamStatus: 504,
+        }),
+      }),
+    /AI generation timed out\. Please try again\./,
+  );
+
+  // HTTP 422 validation_error returns structured validation_error result cleanly
+  const valErr = parsePromptExecutionResponse({
+    ok: false,
+    status: 422,
+    contentType: 'application/json',
+    bodyText: JSON.stringify({
+      status: 'validation_error',
+      brandId: 'b-1',
+      promptId: 'marketing_strategy_channels_tactics',
+      promptVersion: '1.0.0',
+      targetModule: 'marketingStrategy',
+      model: 'gemini-4-hydrogen',
+      generatedAt: '2026-11-19T00:00:00.000Z',
+      error: 'Generated output failed MarketingChannelsTacticsOutput validation: Missing required output field "channels".',
+      errors: ['Missing required output field "channels".'],
+      canSave: false,
+    }),
+  });
+  assert.equal(valErr.status, 'validation_error');
+  assert.equal(valErr.canSave, false);
+
+  // HTTP 200 success returns structured success result cleanly
+  const okResult = parsePromptExecutionResponse({
+    ok: true,
+    status: 200,
+    contentType: 'application/json',
+    bodyText: JSON.stringify({
+      status: 'success',
+      brandId: 'b-1',
+      promptId: 'marketing_strategy_channels_tactics',
+      promptVersion: '1.0.0',
+      targetModule: 'marketingStrategy',
+      sourceClassification: 'reconstructed',
+      model: 'gemini-4-hydrogen',
+      generatedAt: '2026-11-19T00:00:00.000Z',
+      rawText: '{}',
+      output: { channels: [], tactics: [] },
+      metadata: {
+        promptId: 'marketing_strategy_channels_tactics',
+        promptVersion: '1.0.0',
+        targetModule: 'marketingStrategy',
+        sourceClassification: 'reconstructed',
+        brandId: 'b-1',
+        model: 'gemini-4-hydrogen',
+        generatedAt: '2026-11-19T00:00:00.000Z',
+      },
+      canSave: true,
+    }),
+  });
+  assert.equal(okResult.status, 'success');
+  assert.equal(okResult.canSave, true);
+
+  // Single-line markdown JSON fence parses cleanly without weakening field validation
+  const def = resolveExecutablePrompt('marketing_strategy_channels_tactics');
+  assert.ok(def.expectedOutputStructure.geminiResponseSchema);
+  const singleLineValid = validateStructuredOutput(
+    '```json {"suppliedFactsUsed":["Fact 1"],"missingContextNotes":[],"researchCaveat":"AI draft","aiSuggestions":{"channelMixRationale":"Focused","tradeOffNotes":[]},"channels":[{"channelName":"LinkedIn"},{"channelName":"Email"}],"tactics":[{"tacticName":"T1"},{"tacticName":"T2"}]} ```',
+    def.expectedOutputStructure,
+  );
+  assert.equal(singleLineValid.valid, true);
+});
+
+function buildMarketingBudgetFixture(scale: 'realistic' | 'heavy' | 'extreme') {
+  const now = '2026-11-19T00:00:00.000Z';
+  const counts =
+    scale === 'realistic'
+      ? { personas: 4, interests: 6, goals: 4, objectives: 5, channels: 5, tactics: 6 }
+      : scale === 'heavy'
+        ? { personas: 6, interests: 10, goals: 6, objectives: 10, channels: 8, tactics: 12 }
+        : { personas: 8, interests: 12, goals: 8, objectives: 12, channels: 10, tactics: 16 };
+
+  const brand = makeBrand({
+    id: `brand-ms-budget-${scale}`,
+    userId: 'owner-1',
+    brandName: 'The Naheem Uthman',
+    businessDescription:
+      'Strategic brand consulting and AI-enabled content operations advisory helping B2B service founders turn scattered marketing into repeatable growth systems.',
+    industry: 'Brand Strategy & B2B Marketing Advisory',
+    productsOrServices:
+      'Brand Strategy Sprints, Executive Thought Leadership Systems, Content Operations Retainers, and AI Workflow Audits',
+    targetMarket:
+      'B2B founders, agency principals, and solo consultants earning $250k to $5M annually who struggle to translate expertise into consistent inbound pipeline',
+    primaryLocation: 'Lagos, Nigeria & Global Remote (UK/US/EMEA)',
+    websiteUrl: 'https://thenaheemuthman.example',
+    socialLinks: 'https://linkedin.com/in/thenaheemuthman',
+    existingMission: 'LEGACY_MISSION_SHOULD_NOT_BLOAT_CONTEXT',
+    existingVision: 'LEGACY_VISION_SHOULD_NOT_BLOAT_CONTEXT',
+    marketingChallenges:
+      'Inconsistent content output, difficulty differentiating from generic agencies, and limited founder hours for multi-channel execution.',
+    businessGoals:
+      'Build a predictable pipeline of qualified strategy sprint and advisory retainer inquiries over the next two quarters.',
+    competitors: 'Generic social media agencies, fractional CMO consultancies',
+    additionalNotes:
+      'Prefer high-trust authority channels and transparent proof-driven education over hype.',
+  });
+
+  const foundationModule = makeStrategyModule({
+    id: `mod-f-${scale}`,
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'brandFoundation',
+    status: 'completed',
+    content: {
+      brandId: brand.id,
+      completedAt: now,
+      approvedSummary: {
+        purposeStatement: 'VERBOSE_PURPOSE_EXCLUDED_FROM_DOWNSTREAM_PROMPTS '.repeat(12),
+        missionStatement: 'VERBOSE_MISSION_EXCLUDED_FROM_DOWNSTREAM_PROMPTS '.repeat(12),
+        visionStatement: 'VERBOSE_VISION_EXCLUDED_FROM_DOWNSTREAM_PROMPTS '.repeat(12),
+        positioningStatement:
+          'For B2B founders tired of fragmented marketing, The Naheem Uthman turns domain expertise into structured brand strategy and compounding inbound demand.',
+        differentiationAttributes: ['Strategy-first architecture', 'Founder-feasible workflows'],
+      },
+    },
+  });
+
+  const messagingModule = makeStrategyModule({
+    id: `mod-m-${scale}`,
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'brandMessaging',
+    status: 'completed',
+    content: {
+      brandId: brand.id,
+      completedAt: now,
+      approvedSummary: {
+        coreValueProposition:
+          'Transform scattered founder expertise into a clear positioning architecture and predictable B2B inbound content engine.',
+        messagingPillars: [
+          { id: 'p1', title: 'Clarity Before Channels', summary: 'Fix positioning before content distribution.' },
+          { id: 'p2', title: 'Proof-Led Authority', summary: 'Demonstrate real strategic frameworks instead of hype.' },
+        ],
+        voiceAndTone: {
+          attributes: ['Sharp', 'Consultative'],
+          guardrails: ['No fabricated revenue promises'],
+        },
+        audienceAngles: [
+          { id: 'a1', audience: 'B2B Service Founders', message: 'Turn domain expertise into repeatable inbound demand.' },
+        ],
+      },
+    },
+  });
+
+  const personas = Array.from({ length: counts.personas }, (_, idx) => {
+    const i = idx + 1;
+    return {
+      id: `persona-id-${i}`,
+      name: `Approved Persona ${i}: Growth-Stage B2B Founder`,
+      roleOrSegment: `Consultancy Principal Segment ${i}`,
+      summary:
+        'LENGTHY_PERSONA_NARRATIVE_EXCLUDED_FROM_KPI_AND_ROADMAP Experienced domain expert seeking predictable inbound pipeline without becoming a full-time influencer.',
+      goals: [
+        `Build consistent inbound discovery calls for segment ${i}`,
+        'Articulate a sharp market position that commands premium retainers',
+      ],
+      painPoints: [
+        `Unpredictable referral pipeline in segment ${i}`,
+        'Generic agency retainers failed to convert decision-makers',
+      ],
+      purchasingTriggers: ['Hitting a referral plateau', 'Launching a flagship sprint offer'],
+      decisionFactors: ['Demonstrated strategic depth in public frameworks', 'Low founder overhead'],
+      informationSources: ['LinkedIn executive feeds', 'Long-form B2B strategy newsletters'],
+      demographicsRelevant: false,
+      demographics: { ageRange: '30-50' },
+      approved: true,
+      approvedAt: now,
+    };
+  });
+
+  const interests = Array.from({ length: counts.interests }, (_, idx) => {
+    const i = idx + 1;
+    return {
+      id: `interest-id-${i}`,
+      topic: `Approved Interest Cluster ${i}: B2B Positioning & Pipeline Architecture`,
+      frequentQuestions: ['How do I stand out when competitors claim similar outcomes?'],
+      problemsToSolve: [
+        `Generic brand messaging blending into market ${i}`,
+        'Posting content that gets peer likes but zero buyer inquiries',
+      ],
+      contentConsumed: ['Deep-dive LinkedIn carousels', 'Weekly operator newsletters'],
+      searchTopics: [`b2b brand positioning framework ${i}`, 'founder led marketing strategy b2b'],
+      productOrServiceInterests: ['Brand strategy sprints', 'Messaging architecture playbooks'],
+      purchaseTriggers: ['Preparing for a flagship offer launch', 'Pipeline plateau'],
+      concernsOrObjections: ['Sounding overly salesy'],
+      approved: true,
+      approvedAt: now,
+    };
+  });
+
+  const customerIntelModule = makeStrategyModule({
+    id: `mod-ci-${scale}`,
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'customerIntelligence',
+    status: 'completed',
+    content: {
+      brandId: brand.id,
+      completedAt: now,
+      personas: [
+        ...personas,
+        { id: 'persona-unapproved', name: 'UNAPPROVED_PERSONA_MUST_NOT_LEAK', approved: false },
+      ],
+      interests: [
+        ...interests,
+        { id: 'interest-unapproved', topic: 'UNAPPROVED_INTEREST_MUST_NOT_LEAK', approved: false },
+      ],
+    },
+  });
+
+  const goals = Array.from({ length: counts.goals }, (_, idx) => {
+    const i = idx + 1;
+    return {
+      id: `goal-id-${i}`,
+      title: `SMART Goal ${i}: Build Predictable Inbound Advisory Pipeline`,
+      description: `Detailed multi-sentence goal description for track ${i} establishing an authority-led organic acquisition engine generating qualified discovery bookings without paid ad dependence.`,
+      strategicRationale: `Verbose strategic rationale for goal ${i} addressing referral dependence across segment ${i}.`,
+      targetAudience: `Approved Persona ${Math.min(i, counts.personas)}: Growth-Stage B2B Founder`,
+      supportingBusinessObjective: 'Increase qualified strategy sprint and advisory retainer inquiries.',
+      successMetrics: [
+        `Qualified inbound discovery calls booked per month (Track ${i})`,
+        'Newsletter subscriber-to-consultation conversion rate',
+      ],
+      targetValue: 'Baseline to be established in Weeks 1-4 before setting percentage targets.',
+      measurementPeriod: 'Monthly review with quarterly audit',
+      recommendedTimeframe: 'Next 2 quarters (6 months)',
+      approved: true,
+      approvedAt: now,
+    };
+  });
+
+  const objectives = Array.from({ length: counts.objectives }, (_, idx) => {
+    const i = idx + 1;
+    const priority = i <= 2 ? 'high' : i <= 5 ? 'medium' : 'low';
+    return {
+      id: `obj-id-${i}`,
+      title: `${priority === 'high' ? 'High' : priority === 'medium' ? 'Medium' : 'Low'} Priority Objective ${i}: Establish Proof-Driven Authority`,
+      description: `Detailed objective narrative ${i} explaining teardown publishing and diagnostic landing-page workflows.`,
+      intendedBusinessOutcome: `Drive recurring high-intent consultation inquiries from decision-making B2B founders in track ${i}.`,
+      targetAudience: `Approved Persona ${Math.min(i, counts.personas)}: Growth-Stage B2B Founder`,
+      supportingGoalId: `goal-id-${(idx % counts.goals) + 1}`,
+      // Intentionally leave supportingGoalTitle blank on Objective 1 to verify ID-based relationship backfill
+      supportingGoalTitle:
+        i === 1 ? '' : `SMART Goal ${(idx % counts.goals) + 1}: Build Predictable Inbound Advisory Pipeline`,
+      measurementCriteria: `Track engaged decision-maker profile visits and qualified discovery bookings for objective ${i}.`,
+      priority,
+      approved: true,
+      approvedAt: now,
+    };
+  });
+
+  const channels = Array.from({ length: counts.channels }, (_, idx) => {
+    const i = idx + 1;
+    const priority = i <= 2 ? 'primary' : i <= 4 ? 'secondary' : 'experimental';
+    return {
+      id: `ch-id-${i}`,
+      channelName: `Channel ${i}: LinkedIn Executive Editorial`,
+      strategicRationale: `Long strategic rationale justifying channel ${i} based on founder reading habits and trust signals.`,
+      relevantAudience: `Approved Persona ${Math.min(i, counts.personas)}: Growth-Stage B2B Founder`,
+      recommendedUse: `Publish structured messaging teardowns and strategic diagnostic frameworks for channel ${i}.`,
+      expectedContribution: `Generates top-of-funnel founder awareness and referral clicks into diagnostic booking flow for channel ${i}.`,
+      priority,
+      supportingObjectiveId: `obj-id-${(idx % counts.objectives) + 1}`,
+      // Leave supportingObjectiveTitle blank on Channel 1 to verify ID-based relationship backfill
+      supportingObjectiveTitle:
+        i === 1
+          ? ''
+          : `${((idx % counts.objectives) + 1) <= 2 ? 'High' : ((idx % counts.objectives) + 1) <= 5 ? 'Medium' : 'Low'} Priority Objective ${(idx % counts.objectives) + 1}: Establish Proof-Driven Authority`,
+      approved: true,
+      approvedAt: now,
+    };
+  });
+
+  const tactics = Array.from({ length: counts.tactics }, (_, idx) => {
+    const i = idx + 1;
+    const priority = i <= 3 ? 'high' : i <= 7 ? 'medium' : 'low';
+    return {
+      id: `tactic-id-${i}`,
+      tacticName: `Tactic ${i}: Weekly Positioning Teardown Series`,
+      description: `Publish a concrete before-and-after breakdown dissecting how an anonymized B2B consultancy sharpened its positioning in track ${i}.`,
+      supportingObjectiveId: `obj-id-${(idx % counts.objectives) + 1}`,
+      supportingObjectiveTitle:
+        i === 1
+          ? ''
+          : `${((idx % counts.objectives) + 1) <= 2 ? 'High' : ((idx % counts.objectives) + 1) <= 5 ? 'Medium' : 'Low'} Priority Objective ${(idx % counts.objectives) + 1}: Establish Proof-Driven Authority`,
+      recommendedChannelId: `ch-id-${(idx % counts.channels) + 1}`,
+      recommendedChannelName: i === 1 ? '' : `Channel ${(idx % counts.channels) + 1}: LinkedIn Executive Editorial`,
+      targetAudience: `Approved Persona ${Math.min(i, counts.personas)}: Growth-Stage B2B Founder`,
+      executionGuidance: `VERBOSE_EXECUTION_GUIDANCE_EXCLUDED_FROM_KPIS Step 1: Select buyer pain point ${i}. Step 2: Draft 6-slide teardown with concrete rewrites. Step 3: Publish Tuesday 9am with diagnostic worksheet link and engage commenters for track ${i}.`,
+      suggestedFrequency: 'Weekly (Tuesdays)',
+      successMetric: `Qualified diagnostic worksheet downloads per teardown (Track ${i})`,
+      priority,
+      approved: true,
+      approvedAt: now,
+    };
+  });
+
+  const marketingModule = makeStrategyModule({
+    id: `mod-ms-${scale}`,
+    brandId: brand.id,
+    userId: brand.userId,
+    moduleKey: 'marketingStrategy',
+    status: 'in_progress',
+    content: {
+      brandId: brand.id,
+      goals: [
+        ...goals,
+        { id: 'g-unapproved', title: 'UNAPPROVED_GOAL_MUST_NOT_LEAK', approved: false },
+      ],
+      objectives: [
+        ...objectives,
+        { id: 'o-unapproved', title: 'UNAPPROVED_OBJECTIVE_MUST_NOT_LEAK', approved: false },
+      ],
+      channels: [
+        ...channels,
+        { id: 'ch-unapproved', channelName: 'UNAPPROVED_CHANNEL_MUST_NOT_LEAK', approved: false },
+      ],
+      tactics: [
+        ...tactics,
+        { id: 't-unapproved', tacticName: 'UNAPPROVED_TACTIC_MUST_NOT_LEAK', approved: false },
+      ],
+      aiSuggestedGoals: [{ id: 'sg', title: 'PENDING_AI_GOAL_MUST_NOT_LEAK' }],
+      aiSuggestedKpis: [{ id: 'sk', kpiName: 'PENDING_AI_KPI_MUST_NOT_LEAK' }],
+      aiSuggestedRoadmapItems: [{ id: 'sr', activity: 'PENDING_AI_ROADMAP_MUST_NOT_LEAK' }],
+    },
+  });
+
+  const businessConstraints =
+    scale === 'extreme'
+      ? [
+          'Budget: Lean organic-first ($0-$500/month tooling)',
+          'Team Capacity: Founder 4 hrs/week + 1 part-time editor 6 hrs/week',
+          'Known Baselines: 420 newsletter subscribers at 38% open rate; analytics attribution baseline not yet captured',
+          'Target Timeline: Next 2 quarters (24 weeks) with Phase 1 foundation in Weeks 1-4',
+          `Additional Constraints: ${'Maintain strict founder-feasible weekly systems without cold spam or inflated daily posting promises. '.repeat(14)}`,
+        ].join(' | ')
+      : [
+          'Budget: Lean organic-first ($0-$500/month tooling)',
+          'Team Capacity: Founder 4 hrs/week + 1 part-time editor 6 hrs/week',
+          'Known Baselines: 420 newsletter subscribers at 38% open rate; analytics attribution baseline not yet captured',
+          'Target Timeline: Next 2 quarters (24 weeks) with Phase 1 foundation in Weeks 1-4',
+          'Additional Constraints: Prioritize sustainable weekly workflows over daily posting.',
+        ].join(' | ');
+
+  return {
+    brand,
+    modules: [foundationModule, messagingModule, customerIntelModule, marketingModule],
+    extraVariables: {
+      businessConstraints,
+      additionalNotes: brand.additionalNotes,
+      // Spoofing attempts must always be blocked
+      approvedMarketingGoals: 'SPOOFED_GOALS_OVERRIDE',
+      approvedMarketingObjectives: 'SPOOFED_OBJECTIVES_OVERRIDE',
+      approvedMarketingChannels: 'SPOOFED_CHANNELS_OVERRIDE',
+      approvedMarketingTactics: 'SPOOFED_TACTICS_OVERRIDE',
+      approvedCustomerPersonas: 'SPOOFED_PERSONAS_OVERRIDE',
+      approvedAudienceInterests: 'SPOOFED_INTERESTS_OVERRIDE',
+    },
+  };
+}
+
+function assertAllPromptJsonBlocksValid(compiledUserPrompt: string, headings: readonly string[]) {
+  for (const heading of headings) {
+    const startIdx = compiledUserPrompt.indexOf(`${heading}\n`);
+    assert.ok(startIdx !== -1, `Expected section heading "${heading}" in compiled prompt`);
+    const afterHeading = compiledUserPrompt.slice(startIdx + heading.length + 1);
+    const lineEnd = afterHeading.indexOf('\n');
+    const jsonLine = (lineEnd === -1 ? afterHeading : afterHeading.slice(0, lineEnd)).trim();
+    const parsed = JSON.parse(jsonLine) as unknown;
+    assert.ok(Array.isArray(parsed) && parsed.length > 0, `Expected non-empty JSON array under "${heading}"`);
+  }
+}
+
+test('regression: marketing_strategy_kpis stays under 12000-char limit across realistic, heavy, and extreme context while preserving goals, objectives, baselines, relationships, and isolation', () => {
+  assert.equal(ENGINE_MAX_PROMPT_LENGTH, 12_000);
+  assert.equal(ENGINE_MAX_CONTEXT_LENGTH, 24_000);
+
+  for (const scale of ['realistic', 'heavy', 'extreme'] as const) {
+    const { brand, modules, extraVariables } = buildMarketingBudgetFixture(scale);
+    const verified = buildVerifiedBrandContext({
+      expectedBrandId: brand.id,
+      expectedOwnerUserId: brand.userId,
+      brand,
+      strategyModules: modules,
+    });
+
+    const def = resolveExecutablePrompt('marketing_strategy_kpis');
+    const rawVars = buildPromptVariableMap(verified, extraVariables);
+    const rawLen =
+      rawVars.approvedMarketingGoals.length +
+      rawVars.approvedMarketingObjectives.length +
+      rawVars.approvedMarketingChannels.length +
+      rawVars.approvedMarketingTactics.length;
+    assert.ok(
+      rawLen > ENGINE_MAX_PROMPT_LENGTH,
+      `Expected raw KPI variables (${rawLen}) to exceed ${ENGINE_MAX_PROMPT_LENGTH} to reproduce overflow (${scale})`,
+    );
+
+    const compiled = compilePromptTemplate(def, verified, extraVariables);
+    const serializedCtx = JSON.stringify(compiled.contextPayload);
+
+    assert.ok(
+      compiled.combinedPromptText.length < ENGINE_MAX_PROMPT_LENGTH,
+      `Expected KPI compiled prompt (${compiled.combinedPromptText.length}) < ${ENGINE_MAX_PROMPT_LENGTH} (${scale})`,
+    );
+    assert.ok(
+      serializedCtx.length < ENGINE_MAX_CONTEXT_LENGTH,
+      `Expected KPI contextPayload (${serializedCtx.length}) < ${ENGINE_MAX_CONTEXT_LENGTH} (${scale})`,
+    );
+
+    // Every interpolated approved strategy section must remain valid non-empty JSON
+    assertAllPromptJsonBlocksValid(compiled.compiledUserPrompt, [
+      'Approved Marketing Goals:',
+      'Approved Marketing Objectives:',
+      'Approved Marketing Channels:',
+      'Approved Marketing Tactics:',
+    ]);
+
+    // Preserves KPI priorities: goal titles, metrics, target values, timeframes, objective links (backfilled), known baselines
+    assert.match(compiled.compiledUserPrompt, /SMART Goal 1: Build Predictable Inbound Advisory Pipeline/);
+    assert.match(compiled.compiledUserPrompt, /Qualified inbound discovery calls booked per month/);
+    assert.match(compiled.compiledUserPrompt, /Baseline to be established in Weeks 1-4/);
+    assert.match(compiled.compiledUserPrompt, /Next 2 quarters/);
+    assert.match(compiled.compiledUserPrompt, /High Priority Objective 1: Establish Proof-Driven Authority/);
+    assert.match(compiled.compiledUserPrompt, /Known Baselines: 420 newsletter subscribers/);
+    assert.match(compiled.compiledUserPrompt, /Channel 1: LinkedIn Executive Editorial/);
+
+    // Excludes lengthy tactical executionGuidance and verbose persona descriptions
+    assert.equal(compiled.combinedPromptText.includes('VERBOSE_EXECUTION_GUIDANCE_EXCLUDED_FROM_KPIS'), false);
+    assert.equal(serializedCtx.includes('LENGTHY_PERSONA_NARRATIVE_EXCLUDED_FROM_KPI_AND_ROADMAP'), false);
+    assert.equal(serializedCtx.includes('VERBOSE_PURPOSE_EXCLUDED_FROM_DOWNSTREAM_PROMPTS'), false);
+
+    // Deduplication of additionalNotes
+    const noteCount =
+      compiled.compiledUserPrompt.split(
+        'Prefer high-trust authority channels and transparent proof-driven education over hype.',
+      ).length - 1;
+    assert.equal(noteCount, 1);
+
+    // Strict approved-only & anti-spoofing guarantees
+    for (const forbidden of [
+      'UNAPPROVED_GOAL_MUST_NOT_LEAK',
+      'UNAPPROVED_OBJECTIVE_MUST_NOT_LEAK',
+      'UNAPPROVED_CHANNEL_MUST_NOT_LEAK',
+      'UNAPPROVED_TACTIC_MUST_NOT_LEAK',
+      'PENDING_AI_GOAL_MUST_NOT_LEAK',
+      'PENDING_AI_KPI_MUST_NOT_LEAK',
+      'SPOOFED_GOALS_OVERRIDE',
+      'SPOOFED_OBJECTIVES_OVERRIDE',
+      'SPOOFED_CHANNELS_OVERRIDE',
+      'SPOOFED_TACTICS_OVERRIDE',
+      'goal-id-1',
+      'obj-id-1',
+    ]) {
+      assert.equal(compiled.combinedPromptText.includes(forbidden), false, `Forbidden token leaked into KPI prompt: ${forbidden}`);
+      assert.equal(serializedCtx.includes(forbidden), false, `Forbidden token leaked into KPI context: ${forbidden}`);
+    }
+  }
+});
+
+test('regression: marketing_strategy_roadmap stays under 12000-char limit across realistic, heavy, and extreme context while preserving objectives, priorities, channels, tactics, timelines, and isolation', () => {
+  for (const scale of ['realistic', 'heavy', 'extreme'] as const) {
+    const { brand, modules, extraVariables } = buildMarketingBudgetFixture(scale);
+    const verified = buildVerifiedBrandContext({
+      expectedBrandId: brand.id,
+      expectedOwnerUserId: brand.userId,
+      brand,
+      strategyModules: modules,
+    });
+
+    const def = resolveExecutablePrompt('marketing_strategy_roadmap');
+    const compiled = compilePromptTemplate(def, verified, extraVariables);
+    const serializedCtx = JSON.stringify(compiled.contextPayload);
+
+    assert.ok(
+      compiled.combinedPromptText.length < ENGINE_MAX_PROMPT_LENGTH,
+      `Expected Roadmap compiled prompt (${compiled.combinedPromptText.length}) < ${ENGINE_MAX_PROMPT_LENGTH} (${scale})`,
+    );
+    assert.ok(
+      serializedCtx.length < ENGINE_MAX_CONTEXT_LENGTH,
+      `Expected Roadmap contextPayload (${serializedCtx.length}) < ${ENGINE_MAX_CONTEXT_LENGTH} (${scale})`,
+    );
+
+    assertAllPromptJsonBlocksValid(compiled.compiledUserPrompt, [
+      'Approved Marketing Goals:',
+      'Approved Marketing Objectives:',
+      'Approved Marketing Channels:',
+      'Approved Marketing Tactics:',
+    ]);
+
+    // Preserves Roadmap priorities: high-priority objectives first, goal timeframes, channel names, tactic descriptions & metrics, timeline/capacity constraints
+    const highIdx = compiled.compiledUserPrompt.indexOf('High Priority Objective 1');
+    const lowIdx = compiled.compiledUserPrompt.indexOf('Low Priority Objective');
+    assert.ok(highIdx !== -1, 'High priority objective must be preserved in Roadmap');
+    if (lowIdx !== -1) {
+      assert.ok(highIdx < lowIdx, 'High priority objectives must appear before low priority objectives in Roadmap');
+    }
+    assert.match(compiled.compiledUserPrompt, /SMART Goal 1: Build Predictable Inbound Advisory Pipeline/);
+    assert.match(compiled.compiledUserPrompt, /Next 2 quarters/);
+    assert.match(compiled.compiledUserPrompt, /Channel 1: LinkedIn Executive Editorial/);
+    assert.match(compiled.compiledUserPrompt, /Tactic 1: Weekly Positioning Teardown Series/);
+    assert.match(compiled.compiledUserPrompt, /Target Timeline: Next 2 quarters/);
+
+    // Excludes unrelated persona details & legacy profile bloat from supplementalApprovedModules
+    const supp = compiled.contextPayload.supplementalApprovedModules as Record<string, unknown>;
+    assert.equal(supp?.customerIntelligence, undefined);
+    assert.equal(serializedCtx.includes('LENGTHY_PERSONA_NARRATIVE_EXCLUDED_FROM_KPI_AND_ROADMAP'), false);
+    assert.equal(serializedCtx.includes('LEGACY_MISSION_SHOULD_NOT_BLOAT_CONTEXT'), false);
+
+    // Approved-only & anti-spoofing
+    for (const forbidden of [
+      'UNAPPROVED_GOAL_MUST_NOT_LEAK',
+      'UNAPPROVED_OBJECTIVE_MUST_NOT_LEAK',
+      'UNAPPROVED_CHANNEL_MUST_NOT_LEAK',
+      'UNAPPROVED_TACTIC_MUST_NOT_LEAK',
+      'PENDING_AI_ROADMAP_MUST_NOT_LEAK',
+      'SPOOFED_TACTICS_OVERRIDE',
+    ]) {
+      assert.equal(compiled.combinedPromptText.includes(forbidden), false, `Forbidden token leaked into Roadmap prompt: ${forbidden}`);
+      assert.equal(serializedCtx.includes(forbidden), false, `Forbidden token leaked into Roadmap context: ${forbidden}`);
+    }
+  }
+});
+
+test('regression: marketing_strategy_goals_objectives stays under 12000-char prompt and 24000-char context limits across realistic, heavy, extreme, and missing-optional-field cases', () => {
+  for (const scale of ['realistic', 'heavy', 'extreme'] as const) {
+    const { brand, modules, extraVariables } = buildMarketingBudgetFixture(scale);
+    const verified = buildVerifiedBrandContext({
+      expectedBrandId: brand.id,
+      expectedOwnerUserId: brand.userId,
+      brand,
+      strategyModules: modules,
+    });
+
+    const def = resolveExecutablePrompt('marketing_strategy_goals_objectives');
+    const compiled = compilePromptTemplate(def, verified, extraVariables);
+    const serializedCtx = JSON.stringify(compiled.contextPayload);
+
+    assert.ok(
+      compiled.combinedPromptText.length < ENGINE_MAX_PROMPT_LENGTH,
+      `Expected Goals & Objectives compiled prompt (${compiled.combinedPromptText.length}) < ${ENGINE_MAX_PROMPT_LENGTH} (${scale})`,
+    );
+    assert.ok(
+      serializedCtx.length < ENGINE_MAX_CONTEXT_LENGTH,
+      `Expected Goals & Objectives contextPayload (${serializedCtx.length}) < ${ENGINE_MAX_CONTEXT_LENGTH} (${scale})`,
+    );
+
+    assertAllPromptJsonBlocksValid(compiled.compiledUserPrompt, [
+      'Approved Customer Personas (Same Brand Only):',
+      'Approved Audience Interests (Same Brand Only):',
+    ]);
+
+    // Positioning & Value Proposition preserved in supplementalApprovedModules without verbose purpose/mission/vision
+    const supp = compiled.contextPayload.supplementalApprovedModules as Record<string, unknown>;
+    assert.ok(supp?.brandFoundation);
+    assert.ok(supp?.brandMessaging);
+    assert.ok(supp?.marketingStrategy); // compact existing approved goal/objective titles only
+    assert.equal(serializedCtx.includes('VERBOSE_PURPOSE_EXCLUDED_FROM_DOWNSTREAM_PROMPTS'), false);
+    assert.equal(serializedCtx.includes('VERBOSE_EXECUTION_GUIDANCE_EXCLUDED_FROM_KPIS'), false);
+    assert.equal(compiled.combinedPromptText.includes('UNAPPROVED_PERSONA_MUST_NOT_LEAK'), false);
+    assert.equal(compiled.combinedPromptText.includes('UNAPPROVED_INTEREST_MUST_NOT_LEAK'), false);
+    assert.equal(compiled.combinedPromptText.includes('SPOOFED_PERSONAS_OVERRIDE'), false);
+  }
+
+  // Missing optional fields handled cleanly without errors
+  const { brand, modules } = buildMarketingBudgetFixture('realistic');
+  const minimalBrand = makeBrand({
+    ...brand,
+    marketingChallenges: '',
+    businessGoals: '',
+    competitors: '',
+    additionalNotes: '',
+    websiteUrl: '',
+    socialLinks: '',
+  });
+  const verifiedMinimal = buildVerifiedBrandContext({
+    expectedBrandId: minimalBrand.id,
+    expectedOwnerUserId: minimalBrand.userId,
+    brand: minimalBrand,
+    strategyModules: modules.slice(0, 3), // No existing marketingStrategy yet
+  });
+  const compiledMinimal = compilePromptTemplate(
+    resolveExecutablePrompt('marketing_strategy_goals_objectives'),
+    verifiedMinimal,
+  );
+  assert.ok(compiledMinimal.combinedPromptText.length < ENGINE_MAX_PROMPT_LENGTH);
+  assert.match(compiledMinimal.compiledUserPrompt, /Business Goals: Not provided/);
+
+  // Pathological oversized required brand field returns clear actionable error rather than bypassing 12000 limit
+  const oversizedBrand = makeBrand({
+    ...brand,
+    businessDescription: 'Very long business narrative sentence. '.repeat(350),
+  });
+  const verifiedOversized = buildVerifiedBrandContext({
+    expectedBrandId: oversizedBrand.id,
+    expectedOwnerUserId: oversizedBrand.userId,
+    brand: oversizedBrand,
+    strategyModules: modules.slice(0, 3),
+  });
+  assert.throws(
+    () =>
+      compilePromptTemplate(
+        resolveExecutablePrompt('marketing_strategy_goals_objectives'),
+        verifiedOversized,
+      ),
+    /Compiled prompt exceeds the 12000-character server limit/i,
+  );
+});
+
+
+

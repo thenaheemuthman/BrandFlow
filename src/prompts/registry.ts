@@ -953,6 +953,94 @@ export const DEFAULT_PROMPT_DEFINITIONS: readonly PromptDefinition[] = [
           minItems: 2,
         },
       ],
+      geminiResponseSchema: {
+        type: 'OBJECT',
+        properties: {
+          suppliedFactsUsed: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+          missingContextNotes: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+          researchCaveat: { type: 'STRING' },
+          aiSuggestions: {
+            type: 'OBJECT',
+            properties: {
+              strategicFocusSummary: { type: 'STRING' },
+              inputQuestionsForOwner: {
+                type: 'ARRAY',
+                items: { type: 'STRING' },
+              },
+            },
+            required: ['strategicFocusSummary', 'inputQuestionsForOwner'],
+          },
+          goals: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                title: { type: 'STRING' },
+                description: { type: 'STRING' },
+                strategicRationale: { type: 'STRING' },
+                targetAudience: { type: 'STRING' },
+                supportingBusinessObjective: { type: 'STRING' },
+                successMetrics: {
+                  type: 'ARRAY',
+                  items: { type: 'STRING' },
+                },
+                targetValue: { type: 'STRING' },
+                measurementPeriod: { type: 'STRING' },
+                recommendedTimeframe: { type: 'STRING' },
+              },
+              required: [
+                'title',
+                'description',
+                'strategicRationale',
+                'targetAudience',
+                'supportingBusinessObjective',
+                'successMetrics',
+                'targetValue',
+                'measurementPeriod',
+                'recommendedTimeframe',
+              ],
+            },
+          },
+          objectives: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                title: { type: 'STRING' },
+                description: { type: 'STRING' },
+                intendedBusinessOutcome: { type: 'STRING' },
+                targetAudience: { type: 'STRING' },
+                supportingGoalTitle: { type: 'STRING' },
+                measurementCriteria: { type: 'STRING' },
+                priority: { type: 'STRING', enum: ['high', 'medium', 'low'] },
+              },
+              required: [
+                'title',
+                'description',
+                'intendedBusinessOutcome',
+                'targetAudience',
+                'supportingGoalTitle',
+                'measurementCriteria',
+                'priority',
+              ],
+            },
+          },
+        },
+        required: [
+          'suppliedFactsUsed',
+          'missingContextNotes',
+          'researchCaveat',
+          'aiSuggestions',
+          'goals',
+          'objectives',
+        ],
+      },
     },
     modelConfig: {
       model: 'gemini-4-hydrogen',
@@ -1084,6 +1172,100 @@ export const DEFAULT_PROMPT_DEFINITIONS: readonly PromptDefinition[] = [
           minItems: 2,
         },
       ],
+      geminiResponseSchema: {
+        type: 'OBJECT',
+        properties: {
+          suppliedFactsUsed: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+            description: 'Non-empty strings citing verified brand facts and approved upstream inputs used.',
+          },
+          missingContextNotes: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+            description: 'Non-empty strings flagging missing budget, channel access, or staffing context.',
+          },
+          researchCaveat: {
+            type: 'STRING',
+            description: 'Explicit caveat stating these channels and tactics are AI recommendations requiring owner approval.',
+          },
+          aiSuggestions: {
+            type: 'OBJECT',
+            properties: {
+              channelMixRationale: {
+                type: 'STRING',
+                description: 'Concise rationale explaining how the recommended channel mix fits the approved objectives and personas.',
+              },
+              tradeOffNotes: {
+                type: 'ARRAY',
+                items: { type: 'STRING' },
+                description: 'Key trade-offs, capacity considerations, or exclusions noted for the brand owner.',
+              },
+            },
+            required: ['channelMixRationale', 'tradeOffNotes'],
+          },
+          channels: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                channelName: { type: 'STRING' },
+                strategicRationale: { type: 'STRING' },
+                relevantAudience: { type: 'STRING' },
+                recommendedUse: { type: 'STRING' },
+                expectedContribution: { type: 'STRING' },
+                priority: { type: 'STRING', enum: ['primary', 'secondary', 'experimental'] },
+                supportingObjectiveTitle: { type: 'STRING' },
+              },
+              required: [
+                'channelName',
+                'strategicRationale',
+                'relevantAudience',
+                'recommendedUse',
+                'expectedContribution',
+                'priority',
+                'supportingObjectiveTitle',
+              ],
+            },
+          },
+          tactics: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                tacticName: { type: 'STRING' },
+                description: { type: 'STRING' },
+                supportingObjectiveTitle: { type: 'STRING' },
+                recommendedChannelName: { type: 'STRING' },
+                targetAudience: { type: 'STRING' },
+                executionGuidance: { type: 'STRING' },
+                suggestedFrequency: { type: 'STRING' },
+                successMetric: { type: 'STRING' },
+                priority: { type: 'STRING', enum: ['high', 'medium', 'low'] },
+              },
+              required: [
+                'tacticName',
+                'description',
+                'supportingObjectiveTitle',
+                'recommendedChannelName',
+                'targetAudience',
+                'executionGuidance',
+                'suggestedFrequency',
+                'successMetric',
+                'priority',
+              ],
+            },
+          },
+        },
+        required: [
+          'suppliedFactsUsed',
+          'missingContextNotes',
+          'researchCaveat',
+          'aiSuggestions',
+          'channels',
+          'tactics',
+        ],
+      },
     },
     modelConfig: {
       model: 'gemini-4-hydrogen',
@@ -1204,6 +1386,64 @@ export const DEFAULT_PROMPT_DEFINITIONS: readonly PromptDefinition[] = [
           minItems: 2,
         },
       ],
+      geminiResponseSchema: {
+        type: 'OBJECT',
+        properties: {
+          suppliedFactsUsed: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+          missingContextNotes: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+          researchCaveat: { type: 'STRING' },
+          aiSuggestions: {
+            type: 'OBJECT',
+            properties: {
+              measurementGovernanceNote: { type: 'STRING' },
+              instrumentationChecklist: {
+                type: 'ARRAY',
+                items: { type: 'STRING' },
+              },
+            },
+            required: ['measurementGovernanceNote', 'instrumentationChecklist'],
+          },
+          kpis: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                kpiName: { type: 'STRING' },
+                description: { type: 'STRING' },
+                whatItMeasures: { type: 'STRING' },
+                relatedObjectiveTitle: { type: 'STRING' },
+                measurementMethod: { type: 'STRING' },
+                reportingFrequency: { type: 'STRING' },
+                classification: { type: 'STRING', enum: ['leading', 'lagging'] },
+                baselineNote: { type: 'STRING' },
+              },
+              required: [
+                'kpiName',
+                'description',
+                'whatItMeasures',
+                'relatedObjectiveTitle',
+                'measurementMethod',
+                'reportingFrequency',
+                'classification',
+                'baselineNote',
+              ],
+            },
+          },
+        },
+        required: [
+          'suppliedFactsUsed',
+          'missingContextNotes',
+          'researchCaveat',
+          'aiSuggestions',
+          'kpis',
+        ],
+      },
     },
     modelConfig: {
       model: 'gemini-4-hydrogen',
@@ -1322,6 +1562,71 @@ export const DEFAULT_PROMPT_DEFINITIONS: readonly PromptDefinition[] = [
           minItems: 3,
         },
       ],
+      geminiResponseSchema: {
+        type: 'OBJECT',
+        properties: {
+          suppliedFactsUsed: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+          missingContextNotes: {
+            type: 'ARRAY',
+            items: { type: 'STRING' },
+          },
+          researchCaveat: { type: 'STRING' },
+          aiSuggestions: {
+            type: 'OBJECT',
+            properties: {
+              sequencingRationale: { type: 'STRING' },
+              keyRisksToConfirm: {
+                type: 'ARRAY',
+                items: { type: 'STRING' },
+              },
+            },
+            required: ['sequencingRationale', 'keyRisksToConfirm'],
+          },
+          roadmapItems: {
+            type: 'ARRAY',
+            items: {
+              type: 'OBJECT',
+              properties: {
+                phase: { type: 'STRING' },
+                activity: { type: 'STRING' },
+                description: { type: 'STRING' },
+                supportingObjectiveTitle: { type: 'STRING' },
+                channel: { type: 'STRING' },
+                priority: { type: 'STRING', enum: ['high', 'medium', 'low'] },
+                suggestedTimeframe: { type: 'STRING' },
+                dependencies: {
+                  type: 'ARRAY',
+                  items: { type: 'STRING' },
+                },
+                successIndicator: { type: 'STRING' },
+                decisionInputNeeded: { type: 'STRING' },
+              },
+              required: [
+                'phase',
+                'activity',
+                'description',
+                'supportingObjectiveTitle',
+                'channel',
+                'priority',
+                'suggestedTimeframe',
+                'dependencies',
+                'successIndicator',
+                'decisionInputNeeded',
+              ],
+            },
+          },
+        },
+        required: [
+          'suppliedFactsUsed',
+          'missingContextNotes',
+          'researchCaveat',
+          'aiSuggestions',
+          'roadmapItems',
+        ],
+      },
     },
     modelConfig: {
       model: 'gemini-4-hydrogen',

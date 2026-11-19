@@ -121,6 +121,31 @@ function handleModuleError(res: Response, err: unknown, fallbackMessage: string)
   res.status(500).json({ error: err instanceof Error ? err.message : fallbackMessage });
 }
 
+/**
+ * In Google AI Studio preview, an upstream Nginx reverse proxy intercepts
+ * HTTP 502/503/504 responses (`error_page 502 503 504 = /warmup.html;`) and
+ * replaces Express's sanitized JSON error body with HTTP 200 HTML.
+ * When running behind that preview proxy (NGINX_PORT set), map 502/503/504
+ * API error responses to HTTP 500 JSON (preserving `upstreamStatus` in the body)
+ * so the client always receives the real sanitized error message.
+ * Outside preview (Vercel, production, unit tests), return the exact status code.
+ */
+function sendGatewaySafeError(
+  res: Response,
+  statusCode: number,
+  message: string,
+) {
+  const behindPreviewNginx = Boolean(process.env.NGINX_PORT?.trim());
+  if (
+    behindPreviewNginx &&
+    (statusCode === 502 || statusCode === 503 || statusCode === 504)
+  ) {
+    res.status(500).json({ error: message, upstreamStatus: statusCode });
+    return;
+  }
+  res.status(statusCode).json({ error: message });
+}
+
 interface AuthenticatedRequest extends Request {
   authenticatedUser?: { id: string; email: string };
   accessToken?: string;
@@ -346,14 +371,18 @@ export function createApiApp(options?: CreateApiAppOptions) {
       res.json(result);
     } catch (err) {
       if (err instanceof GeminiConfigError) {
-        res.status(err.statusCode).json({ error: err.message });
+        sendGatewaySafeError(res, err.statusCode, err.message);
         return;
       }
       if (err instanceof GeminiTimeoutError || err instanceof GeminiProviderError) {
-        res.status(err.statusCode).json({ error: err.message });
+        sendGatewaySafeError(res, err.statusCode, err.message);
         return;
       }
-      res.status(502).json({ error: 'AI generation failed due to an upstream provider error.' });
+      sendGatewaySafeError(
+        res,
+        502,
+        'AI generation failed due to an upstream provider error.',
+      );
     }
   });
 
@@ -436,7 +465,11 @@ export function createApiApp(options?: CreateApiAppOptions) {
       }
 
       if (result.status === 'validation_error') {
-        res.status(502).json(result);
+        // Log only sanitized schema validation metadata — never prompt contents, raw AI text, PII, or secrets.
+        console.error(
+          `[PromptExecute] promptId=${result.promptId} status=validation_error model=${result.model} errorCount=${result.errors.length} firstError=${result.errors[0] ?? 'unknown'}`,
+        );
+        res.status(422).json(result);
         return;
       }
 
@@ -451,6 +484,9 @@ export function createApiApp(options?: CreateApiAppOptions) {
         err instanceof BrandContextIsolationError ||
         err instanceof PromptCompilationError
       ) {
+        console.error(
+          `[PromptExecute] promptId=${promptId} status=client_error errorName=${err.name} statusCode=${err.statusCode}`,
+        );
         res.status(err.statusCode).json({ error: err.message });
         return;
       }
@@ -459,10 +495,21 @@ export function createApiApp(options?: CreateApiAppOptions) {
         err instanceof GeminiTimeoutError ||
         err instanceof GeminiProviderError
       ) {
-        res.status(err.statusCode).json({ error: err.message });
+        console.error(
+          `[PromptExecute] promptId=${promptId} status=provider_error errorName=${err.name} statusCode=${err.statusCode}`,
+        );
+        sendGatewaySafeError(res, err.statusCode, err.message);
         return;
       }
-      res.status(502).json({ error: 'Prompt execution failed due to an unexpected error.' });
+      const unexpectedName = err instanceof Error ? err.name : 'UnknownError';
+      console.error(
+        `[PromptExecute] promptId=${promptId} status=unexpected_error errorName=${unexpectedName}`,
+      );
+      sendGatewaySafeError(
+        res,
+        502,
+        'Prompt execution failed due to an unexpected error.',
+      );
     }
   });
 

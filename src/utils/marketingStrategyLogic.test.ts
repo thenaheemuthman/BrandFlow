@@ -810,6 +810,7 @@ test('progress tracking, completion gating, business constraints serialization, 
   const vars = buildMarketingPromptVariables(brand, completeState);
   assert.match(vars.businessConstraints, /\$2,500\/mo/);
   assert.match(vars.businessConstraints, /Founder \+ 1 part-time marketer/);
+  assert.equal(vars.additionalNotes, undefined);
 
   const progress = computeMarketingStrategyProgress(completeState);
   assert.equal(progress.approvedCount, 6);

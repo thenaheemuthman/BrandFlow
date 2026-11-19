@@ -36,6 +36,7 @@ export interface PromptOutputStructure {
   readonly description: string;
   readonly fields: readonly PromptFieldSchema[];
   readonly requireGroundedFactSeparation?: boolean;
+  readonly geminiResponseSchema?: Record<string, unknown>;
 }
 
 export interface PromptModelConfig {

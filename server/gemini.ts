@@ -20,6 +20,7 @@ export const ALLOWED_RESPONSE_MIME_TYPES: readonly AiResponseMimeType[] = [
 export const AI_REQUEST_BODY_LIMIT = '64kb';
 export const MAX_PROMPT_LENGTH = 12_000;
 export const MAX_CONTEXT_LENGTH = 24_000;
+export const MAX_RESPONSE_SCHEMA_LENGTH = 16_000;
 export const DEFAULT_AI_TIMEOUT_MS = 50_000;
 export const DEFAULT_AI_MAX_RETRIES = 2;
 export const DEFAULT_AI_RETRY_BASE_DELAY_MS = 400;
@@ -29,6 +30,7 @@ export interface ValidatedAiGenerateInput {
   contextText?: string;
   model: AllowedGeminiModel;
   responseMimeType?: AiResponseMimeType;
+  responseSchema?: Record<string, unknown>;
 }
 
 export interface GeminiClientLike {
@@ -39,6 +41,7 @@ export interface GeminiClientLike {
       config?: {
         abortSignal?: AbortSignal;
         responseMimeType?: string;
+        responseSchema?: Record<string, unknown>;
         thinkingConfig?: {
           thinkingLevel?: ThinkingLevel;
         };
@@ -87,6 +90,74 @@ export function isAllowedResponseMimeType(
   value: string,
 ): value is AiResponseMimeType {
   return (ALLOWED_RESPONSE_MIME_TYPES as readonly string[]).includes(value);
+}
+
+const ALLOWED_SCHEMA_TYPES = new Set([
+  'STRING',
+  'NUMBER',
+  'INTEGER',
+  'BOOLEAN',
+  'ARRAY',
+  'OBJECT',
+]);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validateGeminiSchemaNode(node: unknown, depth = 0): string | null {
+  if (depth > 8) {
+    return 'responseSchema exceeds maximum nesting depth.';
+  }
+  if (!isPlainRecord(node)) {
+    return 'responseSchema nodes must be JSON objects.';
+  }
+  if (typeof node.type !== 'string' || !ALLOWED_SCHEMA_TYPES.has(node.type)) {
+    return 'responseSchema nodes must specify a valid Gemini schema type.';
+  }
+  if (node.type === 'OBJECT') {
+    if (!isPlainRecord(node.properties) || Object.keys(node.properties).length === 0) {
+      return 'responseSchema OBJECT nodes must define non-empty properties.';
+    }
+    for (const child of Object.values(node.properties)) {
+      const childErr = validateGeminiSchemaNode(child, depth + 1);
+      if (childErr) return childErr;
+    }
+  }
+  if (node.type === 'ARRAY') {
+    if (!isPlainRecord(node.items)) {
+      return 'responseSchema ARRAY nodes must define an items schema object.';
+    }
+    const itemErr = validateGeminiSchemaNode(node.items, depth + 1);
+    if (itemErr) return itemErr;
+  }
+  return null;
+}
+
+export function validateGeminiResponseSchema(
+  schema: unknown,
+): { data?: Record<string, unknown>; error?: string } {
+  if (!isPlainRecord(schema)) {
+    return { error: 'responseSchema must be a JSON object.' };
+  }
+  if (schema.type !== 'OBJECT') {
+    return { error: 'Top-level responseSchema must have type "OBJECT".' };
+  }
+  const nodeError = validateGeminiSchemaNode(schema, 0);
+  if (nodeError) {
+    return { error: nodeError };
+  }
+  try {
+    const serialized = JSON.stringify(schema);
+    if (serialized.length > MAX_RESPONSE_SCHEMA_LENGTH) {
+      return {
+        error: `responseSchema exceeds the maximum allowed length of ${MAX_RESPONSE_SCHEMA_LENGTH} characters.`,
+      };
+    }
+  } catch {
+    return { error: 'responseSchema must be serializable JSON.' };
+  }
+  return { data: schema };
 }
 
 export function validateAiGenerateBody(
@@ -164,12 +235,22 @@ export function validateAiGenerateBody(
     responseMimeType = raw.responseMimeType.trim() as AiResponseMimeType;
   }
 
+  let responseSchema: Record<string, unknown> | undefined;
+  if (raw.responseSchema !== undefined && raw.responseSchema !== null) {
+    const schemaCheck = validateGeminiResponseSchema(raw.responseSchema);
+    if (schemaCheck.error || !schemaCheck.data) {
+      return { error: schemaCheck.error ?? 'Invalid responseSchema.' };
+    }
+    responseSchema = schemaCheck.data;
+  }
+
   return {
     data: {
       prompt,
       contextText,
       model,
       responseMimeType,
+      responseSchema,
     },
   };
 }
@@ -360,6 +441,7 @@ export async function generateGeminiContent(
     const config: {
       abortSignal: AbortSignal;
       responseMimeType?: string;
+      responseSchema?: Record<string, unknown>;
       thinkingConfig?: { thinkingLevel: ThinkingLevel };
     } = {
       abortSignal: controller.signal,
@@ -371,6 +453,10 @@ export async function generateGeminiContent(
 
     if (input.responseMimeType) {
       config.responseMimeType = input.responseMimeType;
+    }
+
+    if (input.responseMimeType === 'application/json' && input.responseSchema) {
+      config.responseSchema = input.responseSchema;
     }
 
     try {

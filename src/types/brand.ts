@@ -153,6 +153,7 @@ export interface AiGenerateRequest {
   context?: string | Record<string, unknown>;
   model?: AllowedGeminiModel;
   responseMimeType?: AiResponseMimeType;
+  responseSchema?: Record<string, unknown>;
 }
 
 export interface AiGenerateResponse {

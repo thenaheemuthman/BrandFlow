@@ -387,3 +387,77 @@ test('generateGeminiContent uses 50s timeout, ThinkingLevel.LOW for gemini-4-hyd
     console.error = origConsoleError;
   }
 });
+
+test('validateAiGenerateBody and generateGeminiContent validate and forward Gemini responseSchema safely', async () => {
+  const validSchema = {
+    type: 'OBJECT',
+    properties: {
+      suppliedFactsUsed: { type: 'ARRAY', items: { type: 'STRING' } },
+      aiSuggestions: {
+        type: 'OBJECT',
+        properties: {
+          channelMixRationale: { type: 'STRING' },
+        },
+        required: ['channelMixRationale'],
+      },
+    },
+    required: ['suppliedFactsUsed', 'aiSuggestions'],
+  };
+
+  // Rejects empty OBJECT schema (Gemini API rejects empty OBJECT nodes)
+  const emptyObjResult = validateAiGenerateBody({
+    prompt: 'Generate structured output',
+    responseMimeType: 'application/json',
+    responseSchema: { type: 'OBJECT', properties: {} },
+  });
+  assert.ok(emptyObjResult.error);
+
+  const nestedEmptyObjResult = validateAiGenerateBody({
+    prompt: 'Generate structured output',
+    responseMimeType: 'application/json',
+    responseSchema: {
+      type: 'OBJECT',
+      properties: {
+        aiSuggestions: { type: 'OBJECT' },
+      },
+    },
+  });
+  assert.ok(nestedEmptyObjResult.error);
+
+  const validResult = validateAiGenerateBody({
+    prompt: 'Generate channels and tactics',
+    responseMimeType: 'application/json',
+    responseSchema: validSchema,
+  });
+  assert.equal(validResult.error, undefined);
+  assert.deepEqual(validResult.data?.responseSchema, validSchema);
+
+  await withEnv({ GEMINI_API_KEY: 'AIzaSySchemaForwardTestKey12345' }, async () => {
+    let capturedSchema: Record<string, unknown> | undefined;
+    let capturedMime: string | undefined;
+
+    await generateGeminiContent(
+      {
+        prompt: 'Generate channels and tactics',
+        model: 'gemini-4-hydrogen',
+        responseMimeType: 'application/json',
+        responseSchema: validSchema,
+      },
+      {
+        clientFactory: () => ({
+          models: {
+            async generateContent(params) {
+              capturedSchema = params.config?.responseSchema;
+              capturedMime = params.config?.responseMimeType;
+              return { text: '{"suppliedFactsUsed":["Brand"],"aiSuggestions":{"channelMixRationale":"Focused"}}' };
+            },
+          },
+        }),
+      },
+    );
+
+    assert.equal(capturedMime, 'application/json');
+    assert.deepEqual(capturedSchema, validSchema);
+  });
+});
+

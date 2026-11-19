@@ -100,12 +100,14 @@ async function withTestServer(
     SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
     BRANDFLOW_OWNER_USER_ID: process.env.BRANDFLOW_OWNER_USER_ID,
     GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+    NGINX_PORT: process.env.NGINX_PORT,
   };
   const originalFetch = globalThis.fetch;
 
   process.env.SUPABASE_URL = 'https://example.supabase.co';
   process.env.SUPABASE_ANON_KEY = 'anon-test-key';
   process.env.BRANDFLOW_OWNER_USER_ID = OWNER_ID;
+  delete process.env.NGINX_PORT;
 
   const state = createInitialState();
 
@@ -271,6 +273,9 @@ async function withTestServer(
 
     if (originalEnv.GEMINI_API_KEY === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = originalEnv.GEMINI_API_KEY;
+
+    if (originalEnv.NGINX_PORT === undefined) delete process.env.NGINX_PORT;
+    else process.env.NGINX_PORT = originalEnv.NGINX_PORT;
   }
 }
 
@@ -872,7 +877,7 @@ test('POST /api/brands/:id/prompts/execute enforces owner auth, brand isolation,
     },
   );
 
-  // 6. Malformed JSON response returns 502 validation_error and never auto-saves
+  // 6. Malformed JSON response returns 422 validation_error (avoiding preview Nginx 502 interception) and never auto-saves
   await withTestServer(
     async (baseUrl, state) => {
       const res = await fetch(
@@ -886,7 +891,7 @@ test('POST /api/brands/:id/prompts/execute enforces owner auth, brand isolation,
           body: JSON.stringify({ promptId: 'brand_foundation_synthesis' }),
         },
       );
-      assert.equal(res.status, 502);
+      assert.equal(res.status, 422);
       const body = (await res.json()) as { status: string; canSave: boolean };
       assert.equal(body.status, 'validation_error');
       assert.equal(body.canSave, false);
@@ -1117,3 +1122,576 @@ test('Phase 2B marketingStrategy module supports authenticated CRUD persistence'
     );
   });
 });
+
+test('regression: marketing_strategy_channels_tactics passes native Gemini responseSchema, returns 422 on validation_error, and shields AI Studio preview Nginx from hijacking 502/503/504 errors', async () => {
+  const seedApprovedUpstreamModules = (state: { modules: Map<string, Record<string, unknown>> }) => {
+    const now = '2026-11-18T10:00:00.000Z';
+    state.modules.set(`${OWNED_BRAND_ID}:brandFoundation`, {
+      id: '44444444-4444-4444-8444-444444444441',
+      user_id: OWNER_ID,
+      brand_id: OWNED_BRAND_ID,
+      module_key: 'brandFoundation',
+      status: 'completed',
+      content: {
+        brandId: OWNED_BRAND_ID,
+        approvedSummary: {
+          purpose: 'Make preventive care clear.',
+          mission: 'Clinician-led longevity insights.',
+          vision: 'Proactive diagnostics for every adult.',
+          coreValues: [{ name: 'Rigor', behaviors: 'Cite evidence', whyItMatters: 'Trust' }],
+          positioningStatement: 'For Austin adults seeking physician-backed biomarker clarity.',
+          differentiationAttributes: ['Clinician-led'],
+        },
+      },
+      prompt_id: 'brand_foundation_synthesis',
+      prompt_version: '1.0.0',
+      model: DEFAULT_GEMINI_MODEL,
+      generated_at: now,
+      created_at: now,
+      updated_at: now,
+    });
+    state.modules.set(`${OWNED_BRAND_ID}:brandMessaging`, {
+      id: '44444444-4444-4444-8444-444444444442',
+      user_id: OWNER_ID,
+      brand_id: OWNED_BRAND_ID,
+      module_key: 'brandMessaging',
+      status: 'completed',
+      content: {
+        brandId: OWNED_BRAND_ID,
+        approvedSummary: {
+          coreValueProposition: 'Physician-backed biomarker clarity without guesswork.',
+          messagingPillars: [{ title: 'Clinical Clarity', summary: 'Plain-language reports.' }],
+          voiceAndTone: { attributes: ['Calm', 'Evidence-led'], guardrails: ['Avoid hype'] },
+        },
+      },
+      prompt_id: 'brand_messaging_framework',
+      prompt_version: '1.0.0',
+      model: DEFAULT_GEMINI_MODEL,
+      generated_at: now,
+      created_at: now,
+      updated_at: now,
+    });
+    state.modules.set(`${OWNED_BRAND_ID}:customerIntelligence`, {
+      id: '44444444-4444-4444-8444-444444444443',
+      user_id: OWNER_ID,
+      brand_id: OWNED_BRAND_ID,
+      module_key: 'customerIntelligence',
+      status: 'completed',
+      content: {
+        brandId: OWNED_BRAND_ID,
+        personas: [
+          {
+            id: 'p-1',
+            name: 'Austin Tech Founder',
+            roleOrSegment: 'Founder',
+            painPoints: ['Generic lab results'],
+            informationSources: ['LinkedIn', 'Clinician Newsletters'],
+            approved: true,
+          },
+        ],
+        interests: [
+          {
+            id: 'i-1',
+            topic: 'Metabolic Biomarker Clarity',
+            problemsToSolve: ['Interpreting ApoB labs'],
+            contentConsumed: ['Physician LinkedIn breakdowns'],
+            searchTopics: ['austin preventive biomarker clinic'],
+            approved: true,
+          },
+        ],
+      },
+      prompt_id: 'customer_personas_synthesis',
+      prompt_version: '1.0.0',
+      model: DEFAULT_GEMINI_MODEL,
+      generated_at: now,
+      created_at: now,
+      updated_at: now,
+    });
+    state.modules.set(`${OWNED_BRAND_ID}:marketingStrategy`, {
+      id: '44444444-4444-4444-8444-444444444444',
+      user_id: OWNER_ID,
+      brand_id: OWNED_BRAND_ID,
+      module_key: 'marketingStrategy',
+      status: 'in_progress',
+      content: {
+        brandId: OWNED_BRAND_ID,
+        goals: [
+          {
+            id: 'g-1',
+            title: 'Grow Austin Preventive Consultations',
+            targetAudience: 'Austin Tech Founder',
+            approved: true,
+          },
+        ],
+        objectives: [
+          {
+            id: 'o-1',
+            title: 'Build Local Clinical Authority',
+            priority: 'high',
+            supportingGoalId: 'g-1',
+            supportingGoalTitle: '',
+            intendedBusinessOutcome: 'Increase qualified discovery bookings',
+            targetAudience: 'Austin Tech Founder',
+            approved: true,
+          },
+        ],
+      },
+      prompt_id: 'marketing_strategy_goals_objectives',
+      prompt_version: '1.0.0',
+      model: DEFAULT_GEMINI_MODEL,
+      generated_at: now,
+      created_at: now,
+      updated_at: now,
+    });
+  };
+
+  // 1. Successful execution verifies responseMimeType, native responseSchema, and goal title backfill
+  let seenMime: string | undefined;
+  let seenSchema: Record<string, unknown> | undefined;
+  let seenPrompt = '';
+
+  await withTestServer(
+    async (baseUrl, state) => {
+      seedApprovedUpstreamModules(state as unknown as { modules: Map<string, Record<string, unknown>> });
+
+      const res = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer owner-token',
+          },
+          body: JSON.stringify({
+            promptId: 'marketing_strategy_channels_tactics',
+            includeApprovedModules: true,
+          }),
+        },
+      );
+
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        status: string;
+        canSave: boolean;
+        output: { channels: unknown[]; tactics: unknown[] };
+      };
+      assert.equal(body.status, 'success');
+      assert.equal(body.canSave, true);
+      assert.equal(body.output.channels.length, 2);
+      assert.equal(body.output.tactics.length, 2);
+      assert.equal(seenMime, 'application/json');
+      assert.equal(seenSchema?.type, 'OBJECT');
+      assert.ok(seenSchema?.properties);
+      assert.match(seenPrompt, /Grow Austin Preventive Consultations/);
+    },
+    {
+      generateAiContent: async (input) => {
+        seenMime = input.responseMimeType;
+        seenSchema = input.responseSchema;
+        seenPrompt = input.prompt;
+        return {
+          text: JSON.stringify({
+            suppliedFactsUsed: ['Austin Tech Founder', 'Build Local Clinical Authority'],
+            missingContextNotes: ['Monthly paid media budget not supplied'],
+            researchCaveat: 'AI channel and tactic recommendations require owner approval.',
+            aiSuggestions: {
+              channelMixRationale: 'Prioritize executive credibility channels.',
+              tradeOffNotes: ['Defer paid display until organic demand baseline is captured.'],
+            },
+            channels: [
+              {
+                channelName: 'LinkedIn Executive Editorial',
+                strategicRationale: 'Austin Tech Founder reads physician posts on LinkedIn.',
+                relevantAudience: 'Austin Tech Founder',
+                recommendedUse: 'Weekly ApoB breakdowns',
+                expectedContribution: 'Drives high-trust discovery clicks',
+                priority: 'primary',
+                supportingObjectiveTitle: 'Build Local Clinical Authority',
+              },
+              {
+                channelName: 'Clinician Email Briefing',
+                strategicRationale: 'Direct inbox access for busy founders.',
+                relevantAudience: 'Austin Tech Founder',
+                recommendedUse: 'Bi-weekly lab Q&A',
+                expectedContribution: 'Converts readers into consultation bookings',
+                priority: 'primary',
+                supportingObjectiveTitle: 'Build Local Clinical Authority',
+              },
+            ],
+            tactics: [
+              {
+                tacticName: 'Weekly MD Biomarker Carousel',
+                description: 'Publish 5-slide clinician breakdowns.',
+                supportingObjectiveTitle: 'Build Local Clinical Authority',
+                recommendedChannelName: 'LinkedIn Executive Editorial',
+                targetAudience: 'Austin Tech Founder',
+                executionGuidance: 'Outline 5 cited slides each Tuesday linking to Austin briefing.',
+                suggestedFrequency: 'Weekly',
+                successMetric: 'Briefing page opt-ins',
+                priority: 'high',
+              },
+              {
+                tacticName: 'Bi-Weekly Lab Q&A Dispatch',
+                description: 'Answer one top founder biomarker question.',
+                supportingObjectiveTitle: 'Build Local Clinical Authority',
+                recommendedChannelName: 'Clinician Email Briefing',
+                targetAudience: 'Austin Tech Founder',
+                executionGuidance: 'Send 400-word clinician note with clear consultation CTA.',
+                suggestedFrequency: 'Bi-weekly',
+                successMetric: 'Discovery booking clicks',
+                priority: 'high',
+              },
+            ],
+          }),
+          model: DEFAULT_GEMINI_MODEL,
+          generatedAt: '2026-11-18T12:00:00.000Z',
+        };
+      },
+    },
+  );
+
+  // 2. Behind preview Nginx (NGINX_PORT set), Gemini timeout (504) maps to 500 JSON with upstreamStatus so Nginx cannot replace it with 200 HTML; outside preview, 504 is preserved.
+  await withTestServer(
+    async (baseUrl, state) => {
+      seedApprovedUpstreamModules(state as unknown as { modules: Map<string, Record<string, unknown>> });
+
+      // Outside preview (NGINX_PORT unset): exact 504 preserved (e.g., Vercel)
+      const standardRes = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer owner-token',
+          },
+          body: JSON.stringify({
+            promptId: 'marketing_strategy_channels_tactics',
+            includeApprovedModules: true,
+          }),
+        },
+      );
+      assert.equal(standardRes.status, 504);
+
+      // Inside Google AI Studio preview (NGINX_PORT set): 500 JSON with upstreamStatus so Nginx does not hijack into 200 HTML
+      process.env.NGINX_PORT = '8080';
+      const previewRes = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer owner-token',
+          },
+          body: JSON.stringify({
+            promptId: 'marketing_strategy_channels_tactics',
+            includeApprovedModules: true,
+          }),
+        },
+      );
+      assert.equal(previewRes.status, 500);
+      const body = (await previewRes.json()) as { error: string; upstreamStatus?: number };
+      assert.match(body.error, /timed out/i);
+      assert.equal(body.upstreamStatus, 504);
+    },
+    {
+      generateAiContent: async () => {
+        throw new GeminiTimeoutError();
+      },
+    },
+  );
+});
+
+test('regression: POST /api/brands/:id/prompts/execute optimizes large KPI and Roadmap prompts authoritatively on the server below 12000 chars', async () => {
+  const captured: Array<{
+    promptId: string;
+    promptLen: number;
+    contextLen: number;
+    mime?: string;
+    hasSchema: boolean;
+  }> = [];
+
+  await withTestServer(
+    async (baseUrl, state) => {
+      const now = '2026-11-19T00:00:00.000Z';
+      const personas = Array.from({ length: 5 }, (_, idx) => ({
+        id: `p-${idx + 1}`,
+        name: `Approved Persona ${idx + 1}: Growth Founder`,
+        roleOrSegment: `Principal Segment ${idx + 1}`,
+        summary: 'Experienced domain expert seeking repeatable inbound pipeline without agency fluff. '.repeat(3),
+        painPoints: [`Referral plateau ${idx + 1}`, 'Generic agency copy'],
+        informationSources: ['LinkedIn', 'Operator newsletters'],
+        approved: true,
+      }));
+      const interests = Array.from({ length: 8 }, (_, idx) => ({
+        id: `i-${idx + 1}`,
+        topic: `Approved Interest ${idx + 1}: B2B Positioning`,
+        problemsToSolve: [`Generic messaging ${idx + 1}`, 'Zero buyer inquiries'],
+        contentConsumed: ['LinkedIn carousels', 'Weekly newsletters'],
+        approved: true,
+      }));
+      const goals = Array.from({ length: 5 }, (_, idx) => ({
+        id: `g-${idx + 1}`,
+        title: `SMART Goal ${idx + 1}: Build Predictable Inbound Advisory Pipeline`,
+        description: `Detailed goal description ${idx + 1} establishing repeatable organic inbound consultation demand. `.repeat(3),
+        strategicRationale: `Strategic rationale for goal ${idx + 1} eliminating referral volatility. `.repeat(2),
+        targetAudience: 'Approved Persona 1: Growth Founder',
+        successMetrics: ['Qualified discovery calls booked per month', 'Newsletter-to-call conversion rate'],
+        targetValue: 'Baseline to be established in Weeks 1-4.',
+        measurementPeriod: 'Monthly review',
+        recommendedTimeframe: 'Next 2 quarters',
+        approved: true,
+      }));
+      const objectives = Array.from({ length: 7 }, (_, idx) => ({
+        id: `o-${idx + 1}`,
+        title: `Objective ${idx + 1}: Establish Proof-Driven Authority`,
+        description: `Detailed objective narrative ${idx + 1} for structured teardown publishing. `.repeat(3),
+        intendedBusinessOutcome: `Drive recurring consultation inquiries in track ${idx + 1}.`,
+        targetAudience: 'Approved Persona 1: Growth Founder',
+        supportingGoalId: `g-${(idx % 5) + 1}`,
+        supportingGoalTitle: `SMART Goal ${(idx % 5) + 1}: Build Predictable Inbound Advisory Pipeline`,
+        measurementCriteria: `Track engaged decision-maker visits and discovery bookings for track ${idx + 1}.`,
+        priority: idx < 2 ? 'high' : idx < 5 ? 'medium' : 'low',
+        approved: true,
+      }));
+      const channels = Array.from({ length: 6 }, (_, idx) => ({
+        id: `ch-${idx + 1}`,
+        channelName: `Channel ${idx + 1}: LinkedIn Executive Editorial`,
+        strategicRationale: `Long justification for channel ${idx + 1} grounded in founder reading behavior. `.repeat(3),
+        relevantAudience: 'Approved Persona 1: Growth Founder',
+        recommendedUse: `Publish structured messaging teardowns and diagnostics on channel ${idx + 1}.`,
+        expectedContribution: `Drives authority awareness and consultation clicks on channel ${idx + 1}.`,
+        priority: idx < 2 ? 'primary' : idx < 4 ? 'secondary' : 'experimental',
+        supportingObjectiveId: `o-${(idx % 7) + 1}`,
+        supportingObjectiveTitle: `Objective ${(idx % 7) + 1}: Establish Proof-Driven Authority`,
+        approved: true,
+      }));
+      const tactics = Array.from({ length: 10 }, (_, idx) => ({
+        id: `t-${idx + 1}`,
+        tacticName: `Tactic ${idx + 1}: Weekly Positioning Teardown`,
+        description: `Concrete before-and-after breakdown of B2B positioning clarity for scenario ${idx + 1}.`,
+        supportingObjectiveId: `o-${(idx % 7) + 1}`,
+        supportingObjectiveTitle: `Objective ${(idx % 7) + 1}: Establish Proof-Driven Authority`,
+        recommendedChannelId: `ch-${(idx % 6) + 1}`,
+        recommendedChannelName: `Channel ${(idx % 6) + 1}: LinkedIn Executive Editorial`,
+        targetAudience: 'Approved Persona 1: Growth Founder',
+        executionGuidance: `Step 1: Choose buyer pain point ${idx + 1}. Step 2: Draft 6-slide teardown with concrete rewrites. Step 3: Publish Tuesday 9am with diagnostic worksheet CTA and follow up with commenters. `.repeat(2),
+        suggestedFrequency: 'Weekly',
+        successMetric: `Qualified diagnostic worksheet downloads (Track ${idx + 1})`,
+        priority: idx < 3 ? 'high' : idx < 7 ? 'medium' : 'low',
+        approved: true,
+      }));
+
+      state.modules.set(`${OWNED_BRAND_ID}:brandFoundation`, {
+        id: '55555555-5555-4555-8555-555555555551',
+        user_id: OWNER_ID,
+        brand_id: OWNED_BRAND_ID,
+        module_key: 'brandFoundation',
+        status: 'completed',
+        content: {
+          brandId: OWNED_BRAND_ID,
+          approvedSummary: {
+            purposeStatement: 'Verbose purpose narrative. '.repeat(20),
+            positioningStatement: 'Physician-backed clarity for Austin adults.',
+            differentiationAttributes: ['Clinician-led'],
+          },
+        },
+        prompt_id: 'brand_foundation_synthesis',
+        prompt_version: '1.0.0',
+        model: DEFAULT_GEMINI_MODEL,
+        generated_at: now,
+        created_at: now,
+        updated_at: now,
+      });
+      state.modules.set(`${OWNED_BRAND_ID}:brandMessaging`, {
+        id: '55555555-5555-4555-8555-555555555552',
+        user_id: OWNER_ID,
+        brand_id: OWNED_BRAND_ID,
+        module_key: 'brandMessaging',
+        status: 'completed',
+        content: {
+          brandId: OWNED_BRAND_ID,
+          approvedSummary: {
+            coreValueProposition: 'Clear preventive biomarker insights without guesswork.',
+            messagingPillars: [{ title: 'Clarity', summary: 'Plain-language reporting.' }],
+          },
+        },
+        prompt_id: 'brand_messaging_framework',
+        prompt_version: '1.0.0',
+        model: DEFAULT_GEMINI_MODEL,
+        generated_at: now,
+        created_at: now,
+        updated_at: now,
+      });
+      state.modules.set(`${OWNED_BRAND_ID}:customerIntelligence`, {
+        id: '55555555-5555-4555-8555-555555555553',
+        user_id: OWNER_ID,
+        brand_id: OWNED_BRAND_ID,
+        module_key: 'customerIntelligence',
+        status: 'completed',
+        content: { brandId: OWNED_BRAND_ID, personas, interests },
+        prompt_id: 'customer_personas_synthesis',
+        prompt_version: '1.0.0',
+        model: DEFAULT_GEMINI_MODEL,
+        generated_at: now,
+        created_at: now,
+        updated_at: now,
+      });
+      state.modules.set(`${OWNED_BRAND_ID}:marketingStrategy`, {
+        id: '55555555-5555-4555-8555-555555555554',
+        user_id: OWNER_ID,
+        brand_id: OWNED_BRAND_ID,
+        module_key: 'marketingStrategy',
+        status: 'in_progress',
+        content: { brandId: OWNED_BRAND_ID, goals, objectives, channels, tactics },
+        prompt_id: 'marketing_strategy_channels_tactics',
+        prompt_version: '1.0.0',
+        model: DEFAULT_GEMINI_MODEL,
+        generated_at: now,
+        created_at: now,
+        updated_at: now,
+      });
+
+      const constraints =
+        'Budget: Lean organic-first | Team Capacity: 4 hrs/week | Known Baselines: 420 newsletter subscribers at 38% open rate | Target Timeline: Next 2 quarters (24 weeks)';
+
+      // 1. Execute KPI prompt via authoritative server route
+      const kpiRes = await fetch(`${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner-token' },
+        body: JSON.stringify({
+          promptId: 'marketing_strategy_kpis',
+          includeApprovedModules: true,
+          variables: { businessConstraints: constraints },
+        }),
+      });
+      assert.equal(kpiRes.status, 200);
+      const kpiBody = (await kpiRes.json()) as { status: string; output: { kpis: unknown[] } };
+      assert.equal(kpiBody.status, 'success');
+      assert.equal(kpiBody.output.kpis.length, 2);
+
+      // 2. Execute Roadmap prompt via authoritative server route
+      const roadmapRes = await fetch(`${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner-token' },
+        body: JSON.stringify({
+          promptId: 'marketing_strategy_roadmap',
+          includeApprovedModules: true,
+          variables: { businessConstraints: constraints },
+        }),
+      });
+      assert.equal(roadmapRes.status, 200);
+      const roadmapBody = (await roadmapRes.json()) as {
+        status: string;
+        output: { roadmapItems: unknown[] };
+      };
+      assert.equal(roadmapBody.status, 'success');
+      assert.equal(roadmapBody.output.roadmapItems.length, 3);
+
+      // Verify both requests actually reached Gemini strictly under unchanged server limits with native JSON schemas
+      assert.equal(captured.length, 2);
+      for (const call of captured) {
+        assert.ok(call.promptLen < MAX_PROMPT_LENGTH, `Server compiled prompt (${call.promptLen}) must be < ${MAX_PROMPT_LENGTH}`);
+        assert.ok(call.contextLen < MAX_CONTEXT_LENGTH, `Server context (${call.contextLen}) must be < ${MAX_CONTEXT_LENGTH}`);
+        assert.equal(call.mime, 'application/json');
+        assert.equal(call.hasSchema, true);
+      }
+    },
+    {
+      generateAiContent: async (input) => {
+        const isKpi = input.prompt.includes('KPI & Measurement Framework');
+        captured.push({
+          promptId: isKpi ? 'marketing_strategy_kpis' : 'marketing_strategy_roadmap',
+          promptLen: input.prompt.length,
+          contextLen: (input.contextText ?? '').length,
+          mime: input.responseMimeType,
+          hasSchema: Boolean(input.responseSchema),
+        });
+        return {
+          text: isKpi
+            ? JSON.stringify({
+                suppliedFactsUsed: ['SMART Goal 1', 'Known Baselines: 420 newsletter subscribers'],
+                missingContextNotes: ['Website consultation attribution baseline not yet captured'],
+                researchCaveat: 'AI KPI proposals require baseline verification before target lock.',
+                aiSuggestions: {
+                  measurementGovernanceNote: 'Review leading metrics weekly and lagging metrics monthly.',
+                  instrumentationChecklist: ['Enable UTM tracking on diagnostic worksheet links'],
+                },
+                kpis: [
+                  {
+                    kpiName: 'Qualified Diagnostic Worksheet Downloads',
+                    description: 'Measures early founder intent from weekly teardowns.',
+                    whatItMeasures: 'Weekly lead-magnet opt-ins from target B2B founders',
+                    relatedObjectiveTitle: 'Objective 1: Establish Proof-Driven Authority',
+                    measurementMethod: 'Newsletter form UTM attribution',
+                    reportingFrequency: 'Weekly',
+                    classification: 'leading',
+                    baselineNote: 'Baseline to be captured during Weeks 1-4.',
+                  },
+                  {
+                    kpiName: 'Qualified Discovery Calls Booked',
+                    description: 'Tracks pipeline conversion from authority content.',
+                    whatItMeasures: 'Monthly consultation bookings meeting fit criteria',
+                    relatedObjectiveTitle: 'Objective 1: Establish Proof-Driven Authority',
+                    measurementMethod: 'Calendar intake form + source tag',
+                    reportingFrequency: 'Monthly',
+                    classification: 'lagging',
+                    baselineNote: 'Baseline to be established during Month 1.',
+                  },
+                ],
+              })
+            : JSON.stringify({
+                suppliedFactsUsed: ['Objective 1', 'Target Timeline: Next 2 quarters'],
+                missingContextNotes: ['Confirm editor weekly handoff schedule'],
+                researchCaveat: 'AI sequencing proposal pending owner capacity confirmation.',
+                aiSuggestions: {
+                  sequencingRationale: 'Build attribution foundation before scaling weekly teardowns.',
+                  keyRisksToConfirm: ['Confirm 4-hour founder weekly review slot'],
+                },
+                roadmapItems: [
+                  {
+                    phase: 'Phase 1: Foundation & Setup',
+                    activity: 'Instrument UTM tracking and diagnostic intake page',
+                    description: 'Configure landing-page attribution before publishing series.',
+                    supportingObjectiveTitle: 'Objective 1: Establish Proof-Driven Authority',
+                    channel: 'Channel 1: LinkedIn Executive Editorial',
+                    priority: 'high',
+                    suggestedTimeframe: 'Weeks 1-2',
+                    dependencies: ['Approved positioning messaging'],
+                    successIndicator: 'End-to-end UTM attribution verified in analytics',
+                    decisionInputNeeded: 'Confirm preferred analytics tool',
+                  },
+                  {
+                    phase: 'Phase 2: Launch & Validation',
+                    activity: 'Launch Weekly Positioning Teardown Series',
+                    description: 'Publish initial 4 weekly teardowns and log reader questions.',
+                    supportingObjectiveTitle: 'Objective 1: Establish Proof-Driven Authority',
+                    channel: 'Channel 1: LinkedIn Executive Editorial',
+                    priority: 'high',
+                    suggestedTimeframe: 'Weeks 3-8',
+                    dependencies: ['Diagnostic intake page live'],
+                    successIndicator: '4 consecutive weekly teardowns published on cadence',
+                    decisionInputNeeded: '',
+                  },
+                  {
+                    phase: 'Phase 3: Optimization & Scale',
+                    activity: 'Refine teardown angles from Month 1-2 baseline data',
+                    description: 'Double down on highest-converting diagnostic topics.',
+                    supportingObjectiveTitle: 'Objective 1: Establish Proof-Driven Authority',
+                    channel: 'Channel 1: LinkedIn Executive Editorial',
+                    priority: 'medium',
+                    suggestedTimeframe: 'Weeks 9-16',
+                    dependencies: ['Weeks 3-8 baseline review completed'],
+                    successIndicator: 'Updated Q2 editorial cadence approved by owner',
+                    decisionInputNeeded: 'Confirm whether to add secondary distribution channel',
+                  },
+                ],
+              }),
+          model: DEFAULT_GEMINI_MODEL,
+          generatedAt: '2026-11-19T00:00:00.000Z',
+        };
+      },
+    },
+  );
+});
+
+

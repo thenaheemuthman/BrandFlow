@@ -12,6 +12,7 @@ import type {
   WorkspaceOverviewResponse,
 } from '../types/brand';
 import type { PromptExecutionResult } from '../prompts/types';
+import { parsePromptExecutionResponse } from './promptResponseParser';
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const { data: { session } } = await supabase.auth.getSession();
@@ -25,7 +26,18 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
     },
   });
 
-  const data = await response.json().catch(() => ({}));
+  const bodyText = await response.text();
+  const contentType = response.headers.get('content-type');
+  let data: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = bodyText.trim() ? JSON.parse(bodyText) : null;
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      data = parsed as Record<string, unknown>;
+    }
+  } catch {
+    data = null;
+  }
+
   if (!response.ok) {
     const message =
       typeof data?.error === 'string' && data.error
@@ -33,6 +45,16 @@ async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
         : `Request failed with status ${response.status}`;
     throw new Error(message);
   }
+
+  if (data === null) {
+    if (contentType && /text\/html/i.test(contentType)) {
+      throw new Error(
+        'The server returned a temporary gateway page instead of JSON. Please try again.',
+      );
+    }
+    throw new Error('The server returned an unreadable non-JSON response. Please try again.');
+  }
+
   return data as T;
 }
 
@@ -160,20 +182,12 @@ export const api = {
       },
     );
 
-    const data = await response.json().catch(() => ({}));
-
-    if (
-      response.ok ||
-      (response.status === 422 && data?.status === 'missing_information') ||
-      (response.status === 502 && data?.status === 'validation_error')
-    ) {
-      return data as PromptExecutionResult;
-    }
-
-    const message =
-      typeof data?.error === 'string' && data.error
-        ? data.error
-        : `Request failed with status ${response.status}`;
-    throw new Error(message);
+    const bodyText = await response.text();
+    return parsePromptExecutionResponse({
+      ok: response.ok,
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      bodyText,
+    });
   },
 };

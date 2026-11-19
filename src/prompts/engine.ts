@@ -25,6 +25,31 @@ import {
   type VariableValidationResult,
   type VerifiedBrandContext,
 } from './types.ts';
+import {
+  compactApprovedList,
+  extractVerifiedCustomerLists,
+  extractVerifiedMarketingList,
+  optimizeMarketingStrategyPromptVariables,
+  projectCompactBrandFoundation,
+  projectCompactBrandMessaging,
+  projectCompactCustomerMeasurementCues,
+  projectExistingApprovedStrategyTitles,
+  renderPromptWithVariables,
+  type ApprovedRecordKind,
+  type CompactApprovedListOptions,
+} from './marketingContextBudget.ts';
+
+export {
+  MARKETING_STRATEGY_PROMPT_TARGET_BUDGET,
+  compactApprovedList,
+  optimizeChannelsTacticsVariables,
+  optimizeGoalsObjectivesVariables,
+  optimizeKpisVariables,
+  optimizeMarketingStrategyPromptVariables,
+  optimizeRoadmapVariables,
+  type ApprovedRecordKind,
+  type CompactApprovedListOptions,
+} from './marketingContextBudget.ts';
 
 export const ENGINE_MAX_PROMPT_LENGTH = 12_000;
 export const ENGINE_MAX_CONTEXT_LENGTH = 24_000;
@@ -333,6 +358,9 @@ function serializeModuleForVariable(
   });
 }
 
+// Shared compaction & verified-list extraction utilities live in ./marketingContextBudget.ts
+// and are re-exported from this module to preserve existing imports cleanly.
+
 export function buildPromptVariableMap(
   verifiedContext: VerifiedBrandContext,
   extraVariables?: Record<string, unknown>,
@@ -359,89 +387,51 @@ export function buildPromptVariableMap(
     resolved.approvedBrandMessaging = messagingVar;
   }
 
-  const compactApprovedList = (items: readonly unknown[]): unknown[] =>
-    items.map((item) => {
-      if (!isRecord(item)) return item;
-      const clean: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(item)) {
-        if (
-          k === 'approved' ||
-          k === 'approvedAt' ||
-          k === 'source' ||
-          k === 'aiHypothesisNote'
-        ) {
-          continue;
-        }
-        if (v === '' || v === null || v === undefined) continue;
-        if (Array.isArray(v) && v.length === 0) continue;
-        clean[k] = v;
-      }
-      return clean;
-    });
-
-  const customerIntelMod = verifiedContext.approvedStrategyModules.customerIntelligence;
-  if (customerIntelMod && isRecord(customerIntelMod.content)) {
-    const summaryPersonas =
-      isRecord(customerIntelMod.content.approvedSummary) &&
-      Array.isArray(customerIntelMod.content.approvedSummary.personas)
-        ? customerIntelMod.content.approvedSummary.personas
-        : null;
-    const directPersonas = Array.isArray(customerIntelMod.content.personas)
-      ? customerIntelMod.content.personas
-      : null;
-    const verifiedPersonas = summaryPersonas ?? directPersonas;
-    if (verifiedPersonas && verifiedPersonas.length > 0) {
-      resolved.approvedCustomerPersonas = JSON.stringify(compactApprovedList(verifiedPersonas));
-    }
-
-    const summaryInterests =
-      isRecord(customerIntelMod.content.approvedSummary) &&
-      Array.isArray(customerIntelMod.content.approvedSummary.interests)
-        ? customerIntelMod.content.approvedSummary.interests
-        : null;
-    const directInterests = Array.isArray(customerIntelMod.content.interests)
-      ? customerIntelMod.content.interests
-      : null;
-    const verifiedInterests = summaryInterests ?? directInterests;
-    if (verifiedInterests && verifiedInterests.length > 0) {
-      resolved.approvedAudienceInterests = JSON.stringify(compactApprovedList(verifiedInterests));
+  const { personas: verifiedPersonas, interests: verifiedInterests } =
+    extractVerifiedCustomerLists(verifiedContext);
+  if (verifiedPersonas.length > 0) {
+    const compactedPersonas = compactApprovedList(verifiedPersonas, { kind: 'persona' });
+    if (compactedPersonas.length > 0) {
+      resolved.approvedCustomerPersonas = JSON.stringify(compactedPersonas);
     }
   }
 
-  const marketingMod = verifiedContext.approvedStrategyModules.marketingStrategy;
-  if (marketingMod && isRecord(marketingMod.content)) {
-    const pickMarketingList = (field: 'goals' | 'objectives' | 'channels' | 'tactics') => {
-      const summaryList =
-        isRecord(marketingMod.content.approvedSummary) &&
-        Array.isArray(marketingMod.content.approvedSummary[field])
-          ? marketingMod.content.approvedSummary[field]
-          : null;
-      const directList = Array.isArray(marketingMod.content[field])
-        ? marketingMod.content[field]
-        : null;
-      return summaryList ?? directList;
-    };
-
-    const verifiedGoals = pickMarketingList('goals');
-    if (verifiedGoals && verifiedGoals.length > 0) {
-      resolved.approvedMarketingGoals = JSON.stringify(compactApprovedList(verifiedGoals));
+  if (verifiedInterests.length > 0) {
+    const compactedInterests = compactApprovedList(verifiedInterests, { kind: 'interest' });
+    if (compactedInterests.length > 0) {
+      resolved.approvedAudienceInterests = JSON.stringify(compactedInterests);
     }
+  }
 
-    const verifiedObjectives = pickMarketingList('objectives');
-    if (verifiedObjectives && verifiedObjectives.length > 0) {
-      resolved.approvedMarketingObjectives = JSON.stringify(
-        compactApprovedList(verifiedObjectives),
-      );
+  const verifiedGoals = extractVerifiedMarketingList(verifiedContext, 'goals');
+  if (verifiedGoals.length > 0) {
+    const compactedGoals = compactApprovedList(verifiedGoals, { kind: 'goal' });
+    if (compactedGoals.length > 0) {
+      resolved.approvedMarketingGoals = JSON.stringify(compactedGoals);
     }
+  }
 
-    const verifiedChannels = pickMarketingList('channels');
-    if (verifiedChannels && verifiedChannels.length > 0) {
-      resolved.approvedMarketingChannels = JSON.stringify(compactApprovedList(verifiedChannels));
+  const verifiedObjectives = extractVerifiedMarketingList(verifiedContext, 'objectives');
+  if (verifiedObjectives.length > 0) {
+    const compactedObjectives = compactApprovedList(verifiedObjectives, { kind: 'objective' });
+    if (compactedObjectives.length > 0) {
+      resolved.approvedMarketingObjectives = JSON.stringify(compactedObjectives);
     }
+  }
 
-    const verifiedTactics = pickMarketingList('tactics');
-    if (verifiedTactics && verifiedTactics.length > 0) {
-      resolved.approvedMarketingTactics = JSON.stringify(compactApprovedList(verifiedTactics));
+  const verifiedChannels = extractVerifiedMarketingList(verifiedContext, 'channels');
+  if (verifiedChannels.length > 0) {
+    const compactedChannels = compactApprovedList(verifiedChannels, { kind: 'channel' });
+    if (compactedChannels.length > 0) {
+      resolved.approvedMarketingChannels = JSON.stringify(compactedChannels);
+    }
+  }
+
+  const verifiedTactics = extractVerifiedMarketingList(verifiedContext, 'tactics');
+  if (verifiedTactics.length > 0) {
+    const compactedTactics = compactApprovedList(verifiedTactics, { kind: 'tactic' });
+    if (compactedTactics.length > 0) {
+      resolved.approvedMarketingTactics = JSON.stringify(compactedTactics);
     }
   }
 
@@ -484,7 +474,11 @@ export function buildPromptVariableMap(
 
       if (!serializedValue) continue;
       if (key === 'additionalNotes' && resolved.additionalNotes) {
-        resolved.additionalNotes = `${resolved.additionalNotes} | ${serializedValue}`;
+        const existingNorm = resolved.additionalNotes.replace(/\s+/g, ' ').trim().toLowerCase();
+        const incomingNorm = serializedValue.replace(/\s+/g, ' ').trim().toLowerCase();
+        if (existingNorm !== incomingNorm && !existingNorm.includes(incomingNorm)) {
+          resolved.additionalNotes = `${resolved.additionalNotes} | ${serializedValue}`;
+        }
       } else {
         resolved[key] = serializedValue;
       }
@@ -545,6 +539,38 @@ function extractTemplateVariableNames(template: string): Set<string> {
   return names;
 }
 
+const MARKETING_STRATEGY_SUPPLEMENTAL_FACT_EXCLUSIONS: Record<string, ReadonlySet<string>> = {
+  marketing_strategy_goals_objectives: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+  ]),
+  marketing_strategy_channels_tactics: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+  ]),
+  marketing_strategy_kpis: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+    'businessDescription',
+  ]),
+  marketing_strategy_roadmap: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+    'businessDescription',
+    'businessGoals',
+  ]),
+};
+
 export function buildApprovedContextPayload(
   verifiedContext: VerifiedBrandContext,
   definition?: PromptDefinition,
@@ -562,14 +588,16 @@ export function buildApprovedContextPayload(
   }
 
   const embeddedVars = extractTemplateVariableNames(definition.userPromptTemplate);
+  const promptId = definition.promptId;
+  const excludedFacts = MARKETING_STRATEGY_SUPPLEMENTAL_FACT_EXCLUSIONS[promptId];
 
   // Only include facts and approved modules not already interpolated into userPromptTemplate
   // to avoid duplicating large JSON payloads in Gemini requests.
   const supplementalFacts: Record<string, string> = {};
   for (const [key, value] of Object.entries(verifiedContext.suppliedFacts)) {
-    if (!embeddedVars.has(key)) {
-      supplementalFacts[key] = value;
-    }
+    if (embeddedVars.has(key)) continue;
+    if (excludedFacts?.has(key)) continue;
+    supplementalFacts[key] = value;
   }
 
   const supplementalModules: Record<string, unknown> = {};
@@ -577,7 +605,54 @@ export function buildApprovedContextPayload(
     if (!mod) continue;
     const templateVars = MODULE_TEMPLATE_VARIABLES[moduleKey as StrategyModuleKey] ?? [];
     const alreadyEmbedded = templateVars.some((varName) => embeddedVars.has(varName));
-    if (!alreadyEmbedded) {
+    if (alreadyEmbedded) continue;
+
+    if (
+      promptId === 'marketing_strategy_goals_objectives' ||
+      promptId === 'marketing_strategy_channels_tactics'
+    ) {
+      if (moduleKey === 'brandFoundation') {
+        const projected = projectCompactBrandFoundation(mod.content);
+        if (Object.keys(projected).length > 0) supplementalModules[moduleKey] = projected;
+      } else if (moduleKey === 'brandMessaging') {
+        const projected = projectCompactBrandMessaging(mod.content);
+        if (Object.keys(projected).length > 0) supplementalModules[moduleKey] = projected;
+      } else if (
+        promptId === 'marketing_strategy_goals_objectives' &&
+        moduleKey === 'marketingStrategy'
+      ) {
+        const projected = projectExistingApprovedStrategyTitles(verifiedContext);
+        if (Object.keys(projected).length > 0) supplementalModules[moduleKey] = projected;
+      } else {
+        supplementalModules[moduleKey] = mod;
+      }
+    } else if (promptId === 'marketing_strategy_kpis') {
+      if (moduleKey === 'brandFoundation') {
+        const projected = projectCompactBrandFoundation(mod.content);
+        if (Object.keys(projected).length > 0) supplementalModules[moduleKey] = projected;
+      } else if (moduleKey === 'brandMessaging') {
+        const projected = projectCompactBrandMessaging(mod.content, { valuePropOnly: true });
+        if (Object.keys(projected).length > 0) supplementalModules[moduleKey] = projected;
+      } else if (moduleKey === 'customerIntelligence') {
+        const projected = projectCompactCustomerMeasurementCues(verifiedContext);
+        if (Object.keys(projected).length > 0) supplementalModules[moduleKey] = projected;
+      } else {
+        supplementalModules[moduleKey] = mod;
+      }
+    } else if (promptId === 'marketing_strategy_roadmap') {
+      if (moduleKey === 'brandFoundation') {
+        const projected = projectCompactBrandFoundation(mod.content);
+        if (Object.keys(projected).length > 0) supplementalModules[moduleKey] = projected;
+      } else if (moduleKey === 'brandMessaging') {
+        const projected = projectCompactBrandMessaging(mod.content, { valuePropOnly: true });
+        if (Object.keys(projected).length > 0) supplementalModules[moduleKey] = projected;
+      } else if (moduleKey === 'customerIntelligence') {
+        // Roadmap sequencing excludes lengthy persona/interest details to keep context focused.
+        continue;
+      } else {
+        supplementalModules[moduleKey] = mod;
+      }
+    } else {
       supplementalModules[moduleKey] = mod;
     }
   }
@@ -619,11 +694,6 @@ export function compilePromptTemplate(
     );
   }
 
-  const compiledUserPrompt = definition.userPromptTemplate.replace(
-    /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g,
-    (_fullMatch, key: string) => validation.resolvedVariables[key] ?? 'Not provided',
-  );
-
   const outputFormatInstruction =
     definition.expectedOutputStructure.format === 'json'
       ? `Output Format Requirement: Respond with valid JSON only (schema: ${definition.expectedOutputStructure.schemaName}). Required fields: ${definition.expectedOutputStructure.fields
@@ -639,10 +709,22 @@ export function compilePromptTemplate(
     .filter(Boolean)
     .join('\n');
 
-  const combinedPromptText = `${compiledSystemInstructions}\n\n${compiledUserPrompt}`.trim();
+  const finalResolvedVariables = optimizeMarketingStrategyPromptVariables(
+    definition,
+    verifiedContext,
+    compiledSystemInstructions,
+    validation.resolvedVariables,
+  );
+
+  const { compiledUserPrompt, combinedPromptText } = renderPromptWithVariables(
+    definition,
+    compiledSystemInstructions,
+    finalResolvedVariables,
+  );
+
   if (combinedPromptText.length > ENGINE_MAX_PROMPT_LENGTH) {
     throw new PromptCompilationError(
-      `Compiled prompt exceeds the ${ENGINE_MAX_PROMPT_LENGTH}-character server limit.`,
+      `Compiled prompt exceeds the ${ENGINE_MAX_PROMPT_LENGTH}-character server limit (${combinedPromptText.length} characters) even after context optimization. Shorten unusually long brand profile or business constraint entries and try again.`,
     );
   }
 
@@ -670,7 +752,7 @@ export function compilePromptTemplate(
 
 function stripJsonCodeFence(rawText: string): string {
   const trimmed = rawText.trim();
-  const fenceMatch = trimmed.match(/^```(?:json)?\s*\r?\n([\s\S]*?)\r?\n```$/i);
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   if (fenceMatch && typeof fenceMatch[1] === 'string') {
     return fenceMatch[1].trim();
   }
@@ -873,6 +955,10 @@ export async function executePrompt(
     responseMimeType:
       definition.expectedOutputStructure.format === 'json'
         ? 'application/json'
+        : undefined,
+    responseSchema:
+      definition.expectedOutputStructure.format === 'json'
+        ? definition.expectedOutputStructure.geminiResponseSchema
         : undefined,
   });
 

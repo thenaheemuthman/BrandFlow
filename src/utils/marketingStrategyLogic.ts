@@ -1464,9 +1464,6 @@ export function buildMarketingPromptVariables(
   if (constraintsParts.length > 0) {
     vars.businessConstraints = constraintsParts.join(' | ');
   }
-  if (brand.additionalNotes?.trim()) {
-    vars.additionalNotes = brand.additionalNotes.trim();
-  }
   return vars;
 }
 
