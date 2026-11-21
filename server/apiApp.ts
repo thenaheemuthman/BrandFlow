@@ -1,11 +1,14 @@
+import crypto from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import {
   BrandAccessError,
+  CalendarValidationError,
   ModuleValidationError,
   createStorageRepository,
   isValidModuleStatus,
   isValidStrategyModuleKey,
   validateServerBrandInput,
+  type StorageRepository,
 } from './storage.ts';
 import {
   AI_REQUEST_BODY_LIMIT,
@@ -17,7 +20,12 @@ import {
   type GeminiGenerateFn,
 } from './gemini.ts';
 import type {
+  AiErrorCategory,
   BrandFormInput,
+  CreateContentCalendarInput,
+  CreateContentCalendarItemInput,
+  UpdateContentCalendarInput,
+  UpdateContentCalendarItemInput,
   UpsertBrandModuleInput,
   UserProfile,
 } from '../src/types/brand.ts';
@@ -114,7 +122,7 @@ function handleModuleError(res: Response, err: unknown, fallbackMessage: string)
     res.status(404).json({ error: 'Brand not found.' });
     return;
   }
-  if (err instanceof ModuleValidationError) {
+  if (err instanceof ModuleValidationError || err instanceof CalendarValidationError) {
     res.status(400).json({ error: err.message });
     return;
   }
@@ -134,16 +142,22 @@ function sendGatewaySafeError(
   res: Response,
   statusCode: number,
   message: string,
+  extra?: { errorCategory?: AiErrorCategory; requestId?: string },
 ) {
   const behindPreviewNginx = Boolean(process.env.NGINX_PORT?.trim());
+  const payload: Record<string, unknown> = {
+    error: message,
+    ...(extra?.errorCategory ? { errorCategory: extra.errorCategory } : {}),
+    ...(extra?.requestId ? { requestId: extra.requestId } : {}),
+  };
   if (
     behindPreviewNginx &&
     (statusCode === 502 || statusCode === 503 || statusCode === 504)
   ) {
-    res.status(500).json({ error: message, upstreamStatus: statusCode });
+    res.status(500).json({ ...payload, upstreamStatus: statusCode });
     return;
   }
-  res.status(statusCode).json({ error: message });
+  res.status(statusCode).json(payload);
 }
 
 interface AuthenticatedRequest extends Request {
@@ -197,11 +211,28 @@ function getStorage(req: Request) {
 
 export interface CreateApiAppOptions {
   generateAiContent?: GeminiGenerateFn;
+  storageFactory?: (userId: string, accessToken: string, userEmail: string) => StorageRepository;
 }
 
 export function createApiApp(options?: CreateApiAppOptions) {
   const app = express();
-  const generateAi = options?.generateAiContent ?? ((input) => generateGeminiContent(input));
+  const generateAi: GeminiGenerateFn =
+    options?.generateAiContent ??
+    ((input, diagnostics) => generateGeminiContent(input, { diagnostics }));
+  const resolveStorage = (req: Request): StorageRepository => {
+    const authReq = req as AuthenticatedRequest;
+    if (!authReq.authenticatedUser || !authReq.accessToken) {
+      throw new Error('Unauthenticated request.');
+    }
+    if (options?.storageFactory) {
+      return options.storageFactory(
+        authReq.authenticatedUser.id,
+        authReq.accessToken,
+        authReq.authenticatedUser.email,
+      );
+    }
+    return getStorage(req);
+  };
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
@@ -214,7 +245,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
 
   app.get('/api/workspace/overview', async (req, res) => {
     try {
-      const storage = getStorage(req);
+      const storage = resolveStorage(req);
       const [brands, activities, profile] = await Promise.all([
         storage.listBrands(), storage.listActivities(), storage.getProfile(),
       ]);
@@ -225,13 +256,13 @@ export function createApiApp(options?: CreateApiAppOptions) {
   });
 
   app.get('/api/brands', async (req, res) => {
-    try { res.json({ brands: await getStorage(req).listBrands() }); }
+    try { res.json({ brands: await resolveStorage(req).listBrands() }); }
     catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load brands.' }); }
   });
 
   app.get('/api/brands/:id', async (req, res) => {
     try {
-      const storage = getStorage(req);
+      const storage = resolveStorage(req);
       const brand = await storage.getBrand(req.params.id, req.query.trackAccess === 'true');
       if (!brand) { res.status(404).json({ error: 'Brand not found.' }); return; }
       res.json({ brand, activities: await storage.listActivities(brand.id) });
@@ -243,7 +274,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
       const payload = (req.body ?? {}) as BrandFormInput;
       const validationError = validateServerBrandInput(payload);
       if (validationError) { res.status(400).json({ error: validationError }); return; }
-      res.status(201).json({ brand: await getStorage(req).createBrand(payload) });
+      res.status(201).json({ brand: await resolveStorage(req).createBrand(payload) });
     } catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to create brand.' }); }
   });
 
@@ -252,7 +283,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
       const payload = (req.body ?? {}) as BrandFormInput;
       const validationError = validateServerBrandInput(payload);
       if (validationError) { res.status(400).json({ error: validationError }); return; }
-      const updated = await getStorage(req).updateBrand(req.params.id, payload);
+      const updated = await resolveStorage(req).updateBrand(req.params.id, payload);
       if (!updated) { res.status(404).json({ error: 'Brand not found.' }); return; }
       res.json({ brand: updated });
     } catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update brand.' }); }
@@ -260,7 +291,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
 
   app.delete('/api/brands/:id', async (req, res) => {
     try {
-      const deleted = await getStorage(req).deleteBrand(req.params.id);
+      const deleted = await resolveStorage(req).deleteBrand(req.params.id);
       if (!deleted) { res.status(404).json({ error: 'Brand not found.' }); return; }
       res.json({ deleted: true });
     } catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete brand.' }); }
@@ -273,7 +304,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
       return;
     }
     try {
-      const modules = await getStorage(req).listBrandModules(brandId);
+      const modules = await resolveStorage(req).listBrandModules(brandId);
       res.json({ modules });
     } catch (err) {
       handleModuleError(res, err, 'Failed to load strategy modules.');
@@ -290,12 +321,12 @@ export function createApiApp(options?: CreateApiAppOptions) {
     if (!isValidStrategyModuleKey(moduleKey)) {
       res.status(400).json({
         error:
-          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, customerIntelligence, and marketingStrategy.',
+          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, customerIntelligence, marketingStrategy, and contentStrategy.',
       });
       return;
     }
     try {
-      const module = await getStorage(req).getBrandModule(brandId, moduleKey);
+      const module = await resolveStorage(req).getBrandModule(brandId, moduleKey);
       if (!module) {
         res.status(404).json({ error: 'Strategy module not found.' });
         return;
@@ -316,7 +347,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
     if (!isValidStrategyModuleKey(moduleKey)) {
       res.status(400).json({
         error:
-          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, customerIntelligence, and marketingStrategy.',
+          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, customerIntelligence, marketingStrategy, and contentStrategy.',
       });
       return;
     }
@@ -326,7 +357,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
       return;
     }
     try {
-      const module = await getStorage(req).upsertBrandModule(brandId, moduleKey, data);
+      const module = await resolveStorage(req).upsertBrandModule(brandId, moduleKey, data);
       res.json({ module });
     } catch (err) {
       handleModuleError(res, err, 'Failed to save strategy module.');
@@ -343,12 +374,12 @@ export function createApiApp(options?: CreateApiAppOptions) {
     if (!isValidStrategyModuleKey(moduleKey)) {
       res.status(400).json({
         error:
-          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, customerIntelligence, and marketingStrategy.',
+          'Unsupported strategy module key. Supported keys are brandFoundation, brandMessaging, customerIntelligence, marketingStrategy, and contentStrategy.',
       });
       return;
     }
     try {
-      const deleted = await getStorage(req).deleteBrandModule(brandId, moduleKey);
+      const deleted = await resolveStorage(req).deleteBrandModule(brandId, moduleKey);
       if (!deleted) {
         res.status(404).json({ error: 'Strategy module not found.' });
         return;
@@ -429,12 +460,14 @@ export function createApiApp(options?: CreateApiAppOptions) {
 
     const includeApprovedModules = raw.includeApprovedModules === true;
 
+    const requestId = crypto.randomUUID();
+    const startedAt = Date.now();
     try {
       const authReq = req as AuthenticatedRequest;
-      const storage = getStorage(req);
+      const storage = resolveStorage(req);
       const brand = await storage.getBrand(brandId, false);
       if (!brand) {
-        res.status(404).json({ error: 'Brand not found.' });
+        res.status(404).json({ error: 'Brand not found.', requestId });
         return;
       }
 
@@ -455,28 +488,52 @@ export function createApiApp(options?: CreateApiAppOptions) {
           if (error || !data) {
             throw new PromptCompilationError(error ?? 'Compiled prompt failed server validation.');
           }
-          return generateAi(data);
+          return generateAi(data, {
+            requestId,
+            brandId,
+            promptId,
+            stage: 'execute_prompt',
+          });
         },
       });
 
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+
       if (result.status === 'missing_information') {
-        res.status(422).json(result);
+        res.status(422).json({
+          ...result,
+          errorCategory: 'missing_prerequisites',
+          requestId,
+        });
         return;
       }
 
       if (result.status === 'validation_error') {
+        const isJsonParse = /malformed json|could not be parsed/i.test(result.error);
+        const errorCategory: AiErrorCategory = isJsonParse
+          ? 'json_parse_failure'
+          : 'invalid_ai_response';
         // Log only sanitized schema validation metadata — never prompt contents, raw AI text, PII, or secrets.
         console.error(
-          `[PromptExecute] promptId=${result.promptId} status=validation_error model=${result.model} errorCount=${result.errors.length} firstError=${result.errors[0] ?? 'unknown'}`,
+          `[PromptExecute] requestId=${requestId} brandId=${brandId} promptId=${result.promptId} stage=validate_output elapsedMs=${elapsedMs} status=validation_error errorCategory=${errorCategory} model=${result.model} errorCount=${result.errors.length}`,
         );
-        res.status(422).json(result);
+        res.status(422).json({
+          ...result,
+          errorCategory,
+          requestId,
+        });
         return;
       }
 
       res.json(result);
     } catch (err) {
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
       if (err instanceof PromptNotFoundError) {
-        res.status(err.statusCode).json({ error: err.message });
+        res.status(err.statusCode).json({
+          error: err.message,
+          errorCategory: 'invalid_ai_response',
+          requestId,
+        });
         return;
       }
       if (
@@ -484,10 +541,19 @@ export function createApiApp(options?: CreateApiAppOptions) {
         err instanceof BrandContextIsolationError ||
         err instanceof PromptCompilationError
       ) {
+        const errorCategory: AiErrorCategory = /exceeds.*limit|12000|24000/i.test(err.message)
+          ? 'prompt_budget_exceeded'
+          : /missing required/i.test(err.message)
+            ? 'missing_prerequisites'
+            : 'invalid_ai_response';
         console.error(
-          `[PromptExecute] promptId=${promptId} status=client_error errorName=${err.name} statusCode=${err.statusCode}`,
+          `[PromptExecute] requestId=${requestId} brandId=${brandId} promptId=${promptId} stage=compile_prompt elapsedMs=${elapsedMs} status=client_error errorName=${err.name} errorCategory=${errorCategory} statusCode=${err.statusCode}`,
         );
-        res.status(err.statusCode).json({ error: err.message });
+        res.status(err.statusCode).json({
+          error: err.message,
+          errorCategory,
+          requestId,
+        });
         return;
       }
       if (
@@ -496,27 +562,247 @@ export function createApiApp(options?: CreateApiAppOptions) {
         err instanceof GeminiProviderError
       ) {
         console.error(
-          `[PromptExecute] promptId=${promptId} status=provider_error errorName=${err.name} statusCode=${err.statusCode}`,
+          `[PromptExecute] requestId=${requestId} brandId=${brandId} promptId=${promptId} stage=gemini_call elapsedMs=${elapsedMs} status=provider_error errorName=${err.name} errorCategory=${err.errorCategory} statusCode=${err.statusCode}`,
         );
-        sendGatewaySafeError(res, err.statusCode, err.message);
+        sendGatewaySafeError(res, err.statusCode, err.message, {
+          errorCategory: err.errorCategory,
+          requestId,
+        });
         return;
       }
       const unexpectedName = err instanceof Error ? err.name : 'UnknownError';
       console.error(
-        `[PromptExecute] promptId=${promptId} status=unexpected_error errorName=${unexpectedName}`,
+        `[PromptExecute] requestId=${requestId} brandId=${brandId} promptId=${promptId} stage=unexpected elapsedMs=${elapsedMs} status=unexpected_error errorName=${unexpectedName}`,
       );
       sendGatewaySafeError(
         res,
         502,
         'Prompt execution failed due to an unexpected error.',
+        { errorCategory: 'provider_unavailable', requestId },
       );
+    }
+  });
+
+  // ============================================================================
+  // PHASE 2B: 30-DAY CONTENT CALENDAR ROUTES (BRAND-SCOPED & OWNER-AUTHENTICATED)
+  // ============================================================================
+
+  app.get('/api/brands/:id/calendars', async (req, res) => {
+    const brandId = req.params.id;
+    if (!isValidBrandId(brandId)) {
+      res.status(400).json({ error: 'Invalid brand ID format.' });
+      return;
+    }
+    try {
+      const calendars = await resolveStorage(req).listContentCalendars(brandId);
+      res.json({ calendars });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to load content calendars.');
+    }
+  });
+
+  app.post('/api/brands/:id/calendars', async (req, res) => {
+    const brandId = req.params.id;
+    if (!isValidBrandId(brandId)) {
+      res.status(400).json({ error: 'Invalid brand ID format.' });
+      return;
+    }
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      res.status(400).json({ error: 'Request body must be a JSON object.' });
+      return;
+    }
+    try {
+      const calendar = await resolveStorage(req).createContentCalendar(
+        brandId,
+        req.body as CreateContentCalendarInput,
+      );
+      res.status(201).json({ calendar });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to create content calendar.');
+    }
+  });
+
+  app.get('/api/brands/:id/calendars/:calendarId', async (req, res) => {
+    const brandId = req.params.id;
+    const calendarId = req.params.calendarId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(calendarId)) {
+      res.status(400).json({ error: 'Invalid brand or calendar ID format.' });
+      return;
+    }
+    try {
+      const calendar = await resolveStorage(req).getContentCalendar(brandId, calendarId);
+      if (!calendar) {
+        res.status(404).json({ error: 'Content calendar not found.' });
+        return;
+      }
+      res.json({ calendar });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to load content calendar.');
+    }
+  });
+
+  app.patch('/api/brands/:id/calendars/:calendarId', async (req, res) => {
+    const brandId = req.params.id;
+    const calendarId = req.params.calendarId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(calendarId)) {
+      res.status(400).json({ error: 'Invalid brand or calendar ID format.' });
+      return;
+    }
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      res.status(400).json({ error: 'Request body must be a JSON object.' });
+      return;
+    }
+    try {
+      const calendar = await resolveStorage(req).updateContentCalendar(
+        brandId,
+        calendarId,
+        req.body as UpdateContentCalendarInput,
+      );
+      if (!calendar) {
+        res.status(404).json({ error: 'Content calendar not found.' });
+        return;
+      }
+      res.json({ calendar });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to update content calendar.');
+    }
+  });
+
+  app.delete('/api/brands/:id/calendars/:calendarId', async (req, res) => {
+    const brandId = req.params.id;
+    const calendarId = req.params.calendarId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(calendarId)) {
+      res.status(400).json({ error: 'Invalid brand or calendar ID format.' });
+      return;
+    }
+    try {
+      const deleted = await resolveStorage(req).deleteContentCalendar(brandId, calendarId);
+      if (!deleted) {
+        res.status(404).json({ error: 'Content calendar not found.' });
+        return;
+      }
+      res.json({ deleted: true });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to delete content calendar.');
+    }
+  });
+
+  app.post('/api/brands/:id/calendars/:calendarId/items/batch', async (req, res) => {
+    const brandId = req.params.id;
+    const calendarId = req.params.calendarId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(calendarId)) {
+      res.status(400).json({ error: 'Invalid brand or calendar ID format.' });
+      return;
+    }
+    const body = req.body as {
+      items?: unknown;
+      replaceBatchIndex?: unknown;
+    };
+    if (!body || !Array.isArray(body.items) || body.items.length === 0) {
+      res.status(400).json({ error: 'items must be a non-empty array of calendar entries.' });
+      return;
+    }
+    if (body.items.length > 35) {
+      res.status(400).json({ error: 'Batch cannot exceed 35 calendar entries at once.' });
+      return;
+    }
+    const replaceBatchIndex =
+      typeof body.replaceBatchIndex === 'number' && Number.isInteger(body.replaceBatchIndex)
+        ? body.replaceBatchIndex
+        : null;
+    try {
+      const items = await resolveStorage(req).createContentCalendarItems(
+        brandId,
+        calendarId,
+        body.items as CreateContentCalendarItemInput[],
+        replaceBatchIndex,
+      );
+      res.status(201).json({ items });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to save calendar batch items.');
+    }
+  });
+
+  app.post('/api/brands/:id/calendars/:calendarId/items', async (req, res) => {
+    const brandId = req.params.id;
+    const calendarId = req.params.calendarId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(calendarId)) {
+      res.status(400).json({ error: 'Invalid brand or calendar ID format.' });
+      return;
+    }
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      res.status(400).json({ error: 'Request body must be a JSON object.' });
+      return;
+    }
+    try {
+      const item = await resolveStorage(req).createContentCalendarItem(
+        brandId,
+        calendarId,
+        req.body as CreateContentCalendarItemInput,
+      );
+      res.status(201).json({ item });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to add calendar entry.');
+    }
+  });
+
+  app.patch('/api/brands/:id/calendars/:calendarId/items/:itemId', async (req, res) => {
+    const brandId = req.params.id;
+    const calendarId = req.params.calendarId;
+    const itemId = req.params.itemId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(calendarId) || !isValidBrandId(itemId)) {
+      res.status(400).json({ error: 'Invalid brand, calendar, or item ID format.' });
+      return;
+    }
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      res.status(400).json({ error: 'Request body must be a JSON object.' });
+      return;
+    }
+    try {
+      const item = await resolveStorage(req).updateContentCalendarItem(
+        brandId,
+        calendarId,
+        itemId,
+        req.body as UpdateContentCalendarItemInput,
+      );
+      if (!item) {
+        res.status(404).json({ error: 'Calendar entry not found.' });
+        return;
+      }
+      res.json({ item });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to update calendar entry.');
+    }
+  });
+
+  app.delete('/api/brands/:id/calendars/:calendarId/items/:itemId', async (req, res) => {
+    const brandId = req.params.id;
+    const calendarId = req.params.calendarId;
+    const itemId = req.params.itemId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(calendarId) || !isValidBrandId(itemId)) {
+      res.status(400).json({ error: 'Invalid brand, calendar, or item ID format.' });
+      return;
+    }
+    try {
+      const deleted = await resolveStorage(req).deleteContentCalendarItem(
+        brandId,
+        calendarId,
+        itemId,
+      );
+      if (!deleted) {
+        res.status(404).json({ error: 'Calendar entry not found.' });
+        return;
+      }
+      res.json({ deleted: true });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to delete calendar entry.');
     }
   });
 
   app.put('/api/profile', async (req, res) => {
     try {
       const patch = (req.body ?? {}) as Partial<UserProfile>;
-      const profile = await getStorage(req).updateProfile(patch);
+      const profile = await resolveStorage(req).updateProfile(patch);
       res.json({ profile });
     } catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update profile.' }); }
   });

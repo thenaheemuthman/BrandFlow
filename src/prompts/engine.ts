@@ -38,6 +38,20 @@ import {
   type ApprovedRecordKind,
   type CompactApprovedListOptions,
 } from './marketingContextBudget.ts';
+import {
+  compactApprovedContentList,
+  extractVerifiedContentList,
+  isContentStrategyPromptId,
+  optimizeContentStrategyPromptVariables,
+  projectContentStrategySupplementalModule,
+} from './contentContextBudget.ts';
+import {
+  CONTENT_CALENDAR_PROMPT_IDS,
+  CONTENT_CALENDAR_PROMPT_TARGET_BUDGET,
+  isContentCalendarPromptId,
+  optimizeContentCalendarPromptVariables,
+  projectCalendarSupplementalModule,
+} from './calendarContextBudget.ts';
 
 export {
   MARKETING_STRATEGY_PROMPT_TARGET_BUDGET,
@@ -50,6 +64,30 @@ export {
   type ApprovedRecordKind,
   type CompactApprovedListOptions,
 } from './marketingContextBudget.ts';
+export {
+  CONTENT_STRATEGY_PROMPT_IDS,
+  CONTENT_STRATEGY_PROMPT_TARGET_BUDGET,
+  compactApprovedContentList,
+  extractVerifiedContentList,
+  isContentStrategyPromptId,
+  optimizeContentDistributionVariables,
+  optimizeContentFormatsVariables,
+  optimizeContentGovernanceVariables,
+  optimizeContentObjectivesVariables,
+  optimizeContentPillarsVariables,
+  optimizeContentStrategyPromptVariables,
+  optimizeContentThemesVariables,
+  type ContentApprovedListKey,
+  type ContentStrategyPromptId,
+} from './contentContextBudget.ts';
+export {
+  CONTENT_CALENDAR_PROMPT_IDS,
+  CONTENT_CALENDAR_PROMPT_TARGET_BUDGET,
+  isContentCalendarPromptId,
+  optimizeContentCalendarPromptVariables,
+  projectCalendarSupplementalModule,
+  type ContentCalendarPromptId,
+} from './calendarContextBudget.ts';
 
 export const ENGINE_MAX_PROMPT_LENGTH = 12_000;
 export const ENGINE_MAX_CONTEXT_LENGTH = 24_000;
@@ -226,6 +264,75 @@ function sanitizeApprovedStrategyContent(
         tactics: approvedTactics,
         kpis: approvedKpis,
         roadmapItems: approvedRoadmapItems,
+      };
+    }
+  }
+
+  if (moduleKey === 'contentStrategy') {
+    if (status === 'completed' && isRecord(content.approvedSummary)) {
+      return {
+        brandId: content.brandId,
+        completedAt: content.completedAt ?? null,
+        approvedSummary: content.approvedSummary,
+      };
+    }
+
+    const hasStructuredLists =
+      Array.isArray(content.objectives) ||
+      Array.isArray(content.pillars) ||
+      Array.isArray(content.themes) ||
+      Array.isArray(content.formats) ||
+      Array.isArray(content.series) ||
+      Array.isArray(content.distribution) ||
+      Array.isArray(content.governance) ||
+      Array.isArray(content.aiSuggestedObjectives) ||
+      Array.isArray(content.aiSuggestedPillars) ||
+      Array.isArray(content.aiSuggestedThemes) ||
+      Array.isArray(content.aiSuggestedFormats) ||
+      Array.isArray(content.aiSuggestedSeries) ||
+      Array.isArray(content.aiSuggestedDistribution) ||
+      Array.isArray(content.aiSuggestedGovernance);
+
+    if (hasStructuredLists) {
+      const filterApproved = (list: unknown): Record<string, unknown>[] =>
+        (Array.isArray(list) ? list : [])
+          .filter((item): item is Record<string, unknown> => isRecord(item) && item.approved === true)
+          .map((item) => {
+            const clean = { ...item };
+            delete clean.aiHypothesisNote;
+            return clean;
+          });
+
+      const approvedObjectives = filterApproved(content.objectives);
+      const approvedPillars = filterApproved(content.pillars);
+      const approvedThemes = filterApproved(content.themes);
+      const approvedFormats = filterApproved(content.formats);
+      const approvedSeries = filterApproved(content.series);
+      const approvedDistribution = filterApproved(content.distribution);
+      const approvedGovernance = filterApproved(content.governance);
+
+      if (
+        approvedObjectives.length === 0 &&
+        approvedPillars.length === 0 &&
+        approvedThemes.length === 0 &&
+        approvedFormats.length === 0 &&
+        approvedSeries.length === 0 &&
+        approvedDistribution.length === 0 &&
+        approvedGovernance.length === 0
+      ) {
+        return {};
+      }
+
+      return {
+        brandId: content.brandId,
+        status,
+        objectives: approvedObjectives,
+        pillars: approvedPillars,
+        themes: approvedThemes,
+        formats: approvedFormats,
+        series: approvedSeries,
+        distribution: approvedDistribution,
+        governance: approvedGovernance,
       };
     }
   }
@@ -435,6 +542,57 @@ export function buildPromptVariableMap(
     }
   }
 
+  const verifiedKpis = extractVerifiedMarketingList(verifiedContext, 'kpis');
+  if (verifiedKpis.length > 0) {
+    const compactedKpis = compactApprovedList(verifiedKpis, { kind: 'kpi' });
+    if (compactedKpis.length > 0) {
+      resolved.approvedMarketingKpis = JSON.stringify(compactedKpis);
+    }
+  }
+
+  const verifiedRoadmap = extractVerifiedMarketingList(verifiedContext, 'roadmapItems');
+  if (verifiedRoadmap.length > 0) {
+    const compactedRoadmap = compactApprovedList(verifiedRoadmap, { kind: 'roadmap' });
+    if (compactedRoadmap.length > 0) {
+      resolved.approvedMarketingRoadmap = JSON.stringify(compactedRoadmap);
+    }
+  }
+
+  const contentVarPairs: ReadonlyArray<[string, 'objectives' | 'pillars' | 'themes' | 'formats' | 'series' | 'distribution' | 'governance']> = [
+    ['approvedContentObjectives', 'objectives'],
+    ['approvedContentPillars', 'pillars'],
+    ['approvedContentThemes', 'themes'],
+    ['approvedContentFormats', 'formats'],
+    ['approvedContentSeries', 'series'],
+    ['approvedContentDistribution', 'distribution'],
+    ['approvedContentGovernance', 'governance'],
+  ];
+
+  for (const [varName, listKey] of contentVarPairs) {
+    const verifiedItems = extractVerifiedContentList(verifiedContext, listKey);
+    if (verifiedItems.length > 0) {
+      const compacted = compactApprovedContentList(verifiedItems, listKey);
+      if (compacted.length > 0) {
+        resolved[varName] = JSON.stringify(compacted);
+      }
+    }
+  }
+
+  if (resolved.approvedMarketingObjectives || resolved.approvedMarketingChannels) {
+    resolved.approvedMarketingSummary = JSON.stringify({
+      objectives: verifiedObjectives.length > 0 ? compactApprovedList(verifiedObjectives, { kind: 'objective' }) : [],
+      channels: verifiedChannels.length > 0 ? compactApprovedList(verifiedChannels, { kind: 'channel' }) : [],
+      kpis: verifiedKpis.length > 0 ? compactApprovedList(verifiedKpis, { kind: 'kpi' }) : [],
+    });
+  }
+
+  if (resolved.approvedCustomerPersonas || resolved.approvedAudienceInterests) {
+    resolved.approvedAudienceSummary = JSON.stringify({
+      personas: verifiedPersonas.length > 0 ? compactApprovedList(verifiedPersonas, { kind: 'persona' }) : [],
+      interests: verifiedInterests.length > 0 ? compactApprovedList(verifiedInterests, { kind: 'interest' }) : [],
+    });
+  }
+
   if (extraVariables) {
     const protectedFactKeys = new Set<string>([
       'brandName',
@@ -449,10 +607,21 @@ export function buildPromptVariableMap(
       'approvedBrandMessaging',
       'approvedCustomerPersonas',
       'approvedAudienceInterests',
+      'approvedAudienceSummary',
       'approvedMarketingGoals',
       'approvedMarketingObjectives',
       'approvedMarketingChannels',
       'approvedMarketingTactics',
+      'approvedMarketingKpis',
+      'approvedMarketingRoadmap',
+      'approvedMarketingSummary',
+      'approvedContentObjectives',
+      'approvedContentPillars',
+      'approvedContentThemes',
+      'approvedContentFormats',
+      'approvedContentSeries',
+      'approvedContentDistribution',
+      'approvedContentGovernance',
     ]);
 
     for (const [key, rawValue] of Object.entries(extraVariables)) {
@@ -519,12 +688,28 @@ export function validateRequiredVariables(
 const MODULE_TEMPLATE_VARIABLES: Record<StrategyModuleKey, readonly string[]> = {
   brandFoundation: ['approvedBrandFoundation'],
   brandMessaging: ['approvedBrandMessaging'],
-  customerIntelligence: ['approvedCustomerPersonas', 'approvedAudienceInterests'],
+  customerIntelligence: [
+    'approvedCustomerPersonas',
+    'approvedAudienceInterests',
+    'approvedAudienceSummary',
+  ],
   marketingStrategy: [
     'approvedMarketingGoals',
     'approvedMarketingObjectives',
     'approvedMarketingChannels',
     'approvedMarketingTactics',
+    'approvedMarketingKpis',
+    'approvedMarketingRoadmap',
+    'approvedMarketingSummary',
+  ],
+  contentStrategy: [
+    'approvedContentObjectives',
+    'approvedContentPillars',
+    'approvedContentThemes',
+    'approvedContentFormats',
+    'approvedContentSeries',
+    'approvedContentDistribution',
+    'approvedContentGovernance',
   ],
 };
 
@@ -568,6 +753,67 @@ const MARKETING_STRATEGY_SUPPLEMENTAL_FACT_EXCLUSIONS: Record<string, ReadonlySe
     'competitors',
     'businessDescription',
     'businessGoals',
+  ]),
+  content_strategy_objectives: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+  ]),
+  content_strategy_pillars: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+  ]),
+  content_strategy_themes: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+    'businessDescription',
+    'businessGoals',
+  ]),
+  content_strategy_formats: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+    'businessDescription',
+    'businessGoals',
+  ]),
+  content_strategy_distribution: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+    'businessDescription',
+    'businessGoals',
+  ]),
+  content_strategy_governance: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+    'businessDescription',
+    'businessGoals',
+    'marketingChallenges',
+  ]),
+  content_calendar_weekly_batch: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+    'businessDescription',
+    'businessGoals',
+    'marketingChallenges',
   ]),
 };
 
@@ -652,6 +898,20 @@ export function buildApprovedContextPayload(
       } else {
         supplementalModules[moduleKey] = mod;
       }
+    } else if (isContentStrategyPromptId(promptId)) {
+      const projected = projectContentStrategySupplementalModule(
+        promptId,
+        moduleKey,
+        mod.content,
+      );
+      if (projected) {
+        supplementalModules[moduleKey] = projected;
+      }
+    } else if (isContentCalendarPromptId(promptId)) {
+      const projected = projectCalendarSupplementalModule(moduleKey, mod.content);
+      if (projected) {
+        supplementalModules[moduleKey] = projected;
+      }
     } else {
       supplementalModules[moduleKey] = mod;
     }
@@ -709,12 +969,28 @@ export function compilePromptTemplate(
     .filter(Boolean)
     .join('\n');
 
-  const finalResolvedVariables = optimizeMarketingStrategyPromptVariables(
+  const marketingOptimizedVariables = optimizeMarketingStrategyPromptVariables(
     definition,
     verifiedContext,
     compiledSystemInstructions,
     validation.resolvedVariables,
   );
+  const contentOptimizedVariables = isContentStrategyPromptId(definition.promptId)
+    ? optimizeContentStrategyPromptVariables(
+        definition,
+        verifiedContext,
+        compiledSystemInstructions,
+        marketingOptimizedVariables,
+      )
+    : marketingOptimizedVariables;
+  const finalResolvedVariables = isContentCalendarPromptId(definition.promptId)
+    ? optimizeContentCalendarPromptVariables(
+        definition,
+        verifiedContext,
+        compiledSystemInstructions,
+        contentOptimizedVariables,
+      )
+    : contentOptimizedVariables;
 
   const { compiledUserPrompt, combinedPromptText } = renderPromptWithVariables(
     definition,

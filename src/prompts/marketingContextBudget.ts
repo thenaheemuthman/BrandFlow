@@ -259,7 +259,7 @@ export function extractVerifiedCustomerLists(verifiedContext: VerifiedBrandConte
 
 export function extractVerifiedMarketingList(
   verifiedContext: VerifiedBrandContext,
-  field: 'goals' | 'objectives' | 'channels' | 'tactics',
+  field: 'goals' | 'objectives' | 'channels' | 'tactics' | 'kpis' | 'roadmapItems',
 ): unknown[] {
   const marketingMod = verifiedContext.approvedStrategyModules.marketingStrategy;
   if (!marketingMod || !isRecord(marketingMod.content)) return [];

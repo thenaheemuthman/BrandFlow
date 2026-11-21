@@ -219,12 +219,22 @@ test('LocalJsonStorageRepository enforces brand isolation, ownership, validation
     assert.equal(msMod.moduleKey, 'marketingStrategy');
     assert.equal(msMod.status, 'in_progress');
 
+    // Content Strategy module persists cleanly and updates brand module status
+    const csMod = await ownerRepo.upsertBrandModule(brandA.id, 'contentStrategy', {
+      status: 'in_progress',
+      content: { objectives: [{ id: 'cobj-1', title: 'Build Authority', approved: true }] },
+      promptId: 'content_strategy_objectives',
+      promptVersion: '1.0.0',
+    });
+    assert.equal(csMod.moduleKey, 'contentStrategy');
+    assert.equal(csMod.status, 'in_progress');
+
     // Invalid module keys & invalid content rejected
     await assert.rejects(
       () =>
         ownerRepo.upsertBrandModule(
           brandA.id,
-          'contentStrategy' as StrategyModuleKey,
+          'contentCalendar' as StrategyModuleKey,
           { status: 'in_progress', content: {} },
         ),
       /Unsupported strategy module key/,
@@ -546,7 +556,7 @@ test('LocalJsonStorageRepository deleteBrandModule removes only requested module
 
     // Unsupported key rejected
     await assert.rejects(
-      () => ownerRepo.deleteBrandModule(brand.id, 'contentStrategy' as StrategyModuleKey),
+      () => ownerRepo.deleteBrandModule(brand.id, 'contentCalendar' as StrategyModuleKey),
       /Unsupported strategy module key/,
     );
 
@@ -602,3 +612,236 @@ test('validateServerBrandInput rejects invalid payloads', () => {
     null,
   );
 });
+
+test('Phase 2B Content Strategy SQL migration and schema.sql include contentStrategy in chk_brand_strategy_modules_module_key', async () => {
+  const migrationSql = await fs.readFile(
+    path.resolve(
+      process.cwd(),
+      'supabase/migrations/20261120_phase2b_content_strategy_module_key.sql',
+    ),
+    'utf-8',
+  );
+  const schemaSql = await fs.readFile(
+    path.resolve(process.cwd(), 'supabase/schema.sql'),
+    'utf-8',
+  );
+
+  for (const sql of [migrationSql, schemaSql]) {
+    assert.match(sql, /chk_brand_strategy_modules_module_key/);
+    assert.match(sql, /'brandFoundation'/);
+    assert.match(sql, /'brandMessaging'/);
+    assert.match(sql, /'customerIntelligence'/);
+    assert.match(sql, /'marketingStrategy'/);
+    assert.match(sql, /'contentStrategy'/);
+  }
+});
+
+test('LocalJsonStorageRepository supports multi-calendar CRUD, batch upsert replaceBatchIndex, moduleStatuses sync, isolation, and cascade delete', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'brandflow-calendar-storage-'));
+  try {
+    const ownerRepo = new LocalJsonStorageRepository('user-owner', 'owner@example.com', tempDir);
+    const otherRepo = new LocalJsonStorageRepository('user-other', 'other@example.com', tempDir);
+
+    const brandA = await ownerRepo.createBrand(makeBrandInput({ brandName: 'Brand Alpha' }));
+    const brandB = await ownerRepo.createBrand(makeBrandInput({ brandName: 'Brand Beta' }));
+
+    const cal1 = await ownerRepo.createContentCalendar(brandA.id, {
+      name: 'Dec 2026 30-Day Calendar',
+      startDate: '2026-12-01',
+      endDate: '2026-12-30',
+      durationDays: 30,
+      status: 'generating',
+      settings: {
+        startDate: '2026-12-01',
+        durationDays: 30,
+        selectedPlatforms: ['LinkedIn', 'Email Newsletter'],
+        postsPerWeek: 4,
+        postingFrequencyLabel: '4 posts/week',
+        preferredPostingDays: ['Monday', 'Tuesday', 'Thursday', 'Friday'],
+        preferredPostingTime: '09:00 AM',
+        campaignObjectiveFocus: '',
+        contentMixPreference: '',
+        teamCapacityNote: '',
+        specialDatesOrConstraints: '',
+      },
+      generationState: {
+        totalBatches: 4,
+        completedBatches: 0,
+        batches: [],
+        suppliedFactsUsed: [],
+        missingContextNotes: [],
+        researchCaveat: '',
+      },
+    });
+    const cal2 = await ownerRepo.createContentCalendar(brandA.id, {
+      name: 'Jan 2027 Launch Calendar',
+      startDate: '2027-01-01',
+      endDate: '2027-01-30',
+      durationDays: 30,
+      status: 'draft',
+      settings: {
+        startDate: '2027-01-01',
+        durationDays: 30,
+        selectedPlatforms: ['LinkedIn'],
+        postsPerWeek: 3,
+        postingFrequencyLabel: '3 posts/week',
+        preferredPostingDays: ['Tuesday', 'Thursday', 'Saturday'],
+        preferredPostingTime: '09:00 AM',
+        campaignObjectiveFocus: '',
+        contentMixPreference: '',
+        teamCapacityNote: '',
+        specialDatesOrConstraints: '',
+      },
+    });
+
+    // Multiple calendars per brand supported and strictly brand-isolated
+    assert.equal((await ownerRepo.listContentCalendars(brandA.id)).length, 2);
+    assert.equal((await ownerRepo.listContentCalendars(brandB.id)).length, 0);
+    assert.equal(await ownerRepo.getContentCalendar(brandB.id, cal1.id), null);
+
+    // Non-owner blocked
+    await assert.rejects(
+      () => otherRepo.listContentCalendars(brandA.id),
+      /Brand not found or access denied/,
+    );
+
+    // Batch upsert items + safe replaceBatchIndex retry preserves other batches
+    const week1Initial = await ownerRepo.createContentCalendarItems(
+      brandA.id,
+      cal1.id,
+      [
+        {
+          scheduledDate: '2026-12-02',
+          platform: 'LinkedIn',
+          title: 'Week 1 Initial Post',
+          contentPillar: 'Positioning',
+          contentFormat: 'Carousel',
+          targetAudience: 'B2B Founders',
+          contentObjective: 'Build authority',
+          coreMessage: 'Initial brief',
+          batchIndex: 0,
+        },
+      ],
+      0,
+    );
+    assert.equal(week1Initial.length, 1);
+
+    await ownerRepo.createContentCalendarItems(
+      brandA.id,
+      cal1.id,
+      [
+        {
+          scheduledDate: '2026-12-09',
+          platform: 'Email Newsletter',
+          title: 'Week 2 Preserved Post',
+          contentPillar: 'Systems',
+          contentFormat: 'Essay',
+          targetAudience: 'B2B Founders',
+          contentObjective: 'Build authority',
+          coreMessage: 'Week 2 brief',
+          batchIndex: 1,
+        },
+      ],
+      1,
+    );
+
+    // Retry Week 1 (replaceBatchIndex: 0) replaces only batch 0 and preserves batch 1
+    await ownerRepo.createContentCalendarItems(
+      brandA.id,
+      cal1.id,
+      [
+        {
+          scheduledDate: '2026-12-03',
+          platform: 'LinkedIn',
+          title: 'Week 1 Retried Post',
+          contentPillar: 'Positioning',
+          contentFormat: 'Carousel',
+          targetAudience: 'B2B Founders',
+          contentObjective: 'Build authority',
+          coreMessage: 'Retried brief',
+          batchIndex: 0,
+        },
+      ],
+      0,
+    );
+
+    const fullCal = await ownerRepo.getContentCalendar(brandA.id, cal1.id);
+    assert.ok(fullCal);
+    assert.equal(fullCal.items.length, 2);
+    assert.equal(fullCal.items.some((i) => i.title === 'Week 1 Initial Post'), false);
+    assert.equal(fullCal.items.some((i) => i.title === 'Week 1 Retried Post'), true);
+    assert.equal(fullCal.items.some((i) => i.title === 'Week 2 Preserved Post'), true);
+
+    // Manual item create, update (reschedule + workflow status), and delete
+    const manualItem = await ownerRepo.createContentCalendarItem(brandA.id, cal1.id, {
+      scheduledDate: '2026-12-15',
+      platform: 'LinkedIn',
+      title: 'Manual Founder Note',
+      contentPillar: 'Authority',
+      contentFormat: 'Text Post',
+      targetAudience: 'B2B Founders',
+      contentObjective: 'Share practical lessons',
+      coreMessage: 'Share real lesson learned.',
+      source: 'manual',
+    });
+    const updatedItem = await ownerRepo.updateContentCalendarItem(brandA.id, cal1.id, manualItem.id, {
+      scheduledDate: '2026-12-16',
+      workflowStatus: 'approved',
+    });
+    assert.equal(updatedItem?.scheduledDate, '2026-12-16');
+    assert.equal(updatedItem?.workflowStatus, 'approved');
+
+    // Cross-brand item update rejected cleanly
+    assert.equal(
+      await ownerRepo.updateContentCalendarItem(brandB.id, cal1.id, manualItem.id, { title: 'Tamper' }),
+      null,
+    );
+
+    assert.equal(await ownerRepo.deleteContentCalendarItem(brandA.id, cal1.id, manualItem.id), true);
+
+    // Updating calendar to active syncs brand.moduleStatuses.contentCalendar -> completed
+    await ownerRepo.updateContentCalendar(brandA.id, cal1.id, { status: 'active' });
+    const brandAfterActive = await ownerRepo.getBrand(brandA.id, false);
+    assert.equal(brandAfterActive?.moduleStatuses.contentCalendar, 'completed');
+
+    // Deleting calendar 1 leaves calendar 2 (draft -> in_progress)
+    assert.equal(await ownerRepo.deleteContentCalendar(brandA.id, cal1.id), true);
+    const brandAfterDel1 = await ownerRepo.getBrand(brandA.id, false);
+    assert.equal(brandAfterDel1?.moduleStatuses.contentCalendar, 'in_progress');
+
+    // Deleting brandA cascades remaining calendars & items cleanly
+    assert.equal(await ownerRepo.deleteBrand(brandA.id), true);
+    const rawDb = JSON.parse(
+      await fs.readFile(path.join(tempDir, 'brandflow-db.json'), 'utf-8'),
+    ) as { contentCalendars: unknown[]; contentCalendarItems: unknown[] };
+    assert.equal(rawDb.contentCalendars.length, 0);
+    assert.equal(rawDb.contentCalendarItems.length, 0);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Phase 2B Content Calendar SQL migration and schema.sql define tables, constraints, RLS, and authenticated-only grants', async () => {
+  const migrationSql = await fs.readFile(
+    path.resolve(process.cwd(), 'supabase/migrations/20261121_phase2b_content_calendars.sql'),
+    'utf-8',
+  );
+  const schemaSql = await fs.readFile(
+    path.resolve(process.cwd(), 'supabase/schema.sql'),
+    'utf-8',
+  );
+
+  for (const sql of [migrationSql, schemaSql]) {
+    assert.match(sql, /create table if not exists public\.content_calendars/);
+    assert.match(sql, /create table if not exists public\.content_calendar_items/);
+    assert.match(sql, /content_calendars_status_check/);
+    assert.match(sql, /content_calendar_items_workflow_status_check/);
+    assert.match(sql, /enable row level security/);
+    assert.match(sql, /revoke all on public\.content_calendars from anon/);
+    assert.match(sql, /revoke all on public\.content_calendar_items from anon/);
+    assert.match(sql, /grant select, insert, update, delete on public\.content_calendars to authenticated/);
+    assert.match(sql, /grant select, insert, update, delete on public\.content_calendar_items to authenticated/);
+  }
+});
+
+

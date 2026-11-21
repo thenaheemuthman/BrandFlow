@@ -37,6 +37,8 @@ import { BrandFoundationView } from './BrandFoundationView';
 import { BrandMessagingView } from './BrandMessagingView';
 import { CustomerIntelligenceView } from './CustomerIntelligenceView';
 import { MarketingStrategyView } from './MarketingStrategyView';
+import { ContentStrategyView } from './ContentStrategyView';
+import { ContentCalendarView } from './ContentCalendarView';
 
 interface BrandWorkspaceViewProps {
   brand: Brand;
@@ -48,6 +50,7 @@ interface BrandWorkspaceViewProps {
   onNavigate: (route: AppRoute) => void;
   onUpdateBrand: (input: BrandFormInput) => Promise<void>;
   onModuleSaved: (module: BrandStrategyModule) => void | Promise<void>;
+  onWorkspaceRefresh?: () => void | Promise<void>;
   onToast: (type: 'success' | 'error', message: string) => void;
   onRequestDelete: (brand: Brand) => void;
   onDirtyChange: (dirty: boolean) => void;
@@ -167,6 +170,7 @@ export function BrandWorkspaceView({
   onNavigate,
   onUpdateBrand,
   onModuleSaved,
+  onWorkspaceRefresh,
   onToast,
   onRequestDelete,
   onDirtyChange,
@@ -418,7 +422,7 @@ export function BrandWorkspaceView({
                     {progress.contentStatusLabel}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    Available in Phase 2
+                    6-section editorial strategy workspace
                   </p>
                 </div>
 
@@ -577,12 +581,42 @@ export function BrandWorkspaceView({
             />
           )}
 
+          {section === 'content-strategy' && (
+            <ContentStrategyView
+              key={brand.id}
+              brand={brand}
+              onModuleSaved={onModuleSaved}
+              onToast={onToast}
+              onNavigateToBrandFoundation={() => onSelectSection('brand-foundation')}
+              onNavigateToBrandMessaging={() => onSelectSection('brand-messaging')}
+              onNavigateToCustomerIntelligence={() =>
+                onSelectSection('customer-intelligence')
+              }
+              onNavigateToMarketingStrategy={() =>
+                onSelectSection('marketing-strategy')
+              }
+              onNavigateToBrandSettings={() => onSelectSection('brand-settings')}
+            />
+          )}
+
+          {section === 'content-calendar' && (
+            <ContentCalendarView
+              key={brand.id}
+              brand={brand}
+              onCalendarChanged={() => onWorkspaceRefresh?.()}
+              onToast={onToast}
+              onNavigateToSection={onSelectSection}
+            />
+          )}
+
           {section !== 'overview' &&
             section !== 'brand-settings' &&
             section !== 'brand-foundation' &&
             section !== 'brand-messaging' &&
             section !== 'customer-intelligence' &&
-            section !== 'marketing-strategy' && (
+            section !== 'marketing-strategy' &&
+            section !== 'content-strategy' &&
+            section !== 'content-calendar' && (
             <UpcomingModuleState
               icon={UPCOMING_MODULE_COPY[section].icon}
               title={UPCOMING_MODULE_COPY[section].title}

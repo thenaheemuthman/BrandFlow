@@ -478,6 +478,9 @@ export function App() {
                 onModuleSaved={async () => {
                   await refreshOverview();
                 }}
+                onWorkspaceRefresh={async () => {
+                  await refreshOverview();
+                }}
                 onToast={showToast}
                 onRequestDelete={(brand) => setBrandToDelete(brand)}
                 onDirtyChange={setFormDirty}

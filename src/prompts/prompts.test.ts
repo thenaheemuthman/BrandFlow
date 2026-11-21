@@ -2,6 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Brand, BrandStrategyModule } from '../types/brand.ts';
 import { parsePromptExecutionResponse } from '../services/promptResponseParser.ts';
+import { optimizeContentStrategyPromptVariables } from './contentContextBudget.ts';
+import {
+  CONTENT_CALENDAR_PROMPT_TARGET_BUDGET,
+  optimizeContentCalendarPromptVariables,
+} from './calendarContextBudget.ts';
 import {
   BrandContextIsolationError,
   DEFAULT_PROMPT_DEFINITIONS,
@@ -163,7 +168,7 @@ test('default registry registers original slots safely as draft and reconstructe
   }
 
   const reconstructed = listPrompts({ sourceClassification: 'reconstructed' });
-  assert.equal(reconstructed.length, 8);
+  assert.equal(reconstructed.length, 15);
   for (const item of reconstructed) {
     assert.equal(item.status, 'active');
   }
@@ -173,6 +178,13 @@ test('default registry registers original slots safely as draft and reconstructe
   assert.equal(promptIds.includes('marketing_strategy_channels_tactics'), true);
   assert.equal(promptIds.includes('marketing_strategy_kpis'), true);
   assert.equal(promptIds.includes('marketing_strategy_roadmap'), true);
+  assert.equal(promptIds.includes('content_strategy_objectives'), true);
+  assert.equal(promptIds.includes('content_strategy_pillars'), true);
+  assert.equal(promptIds.includes('content_strategy_themes'), true);
+  assert.equal(promptIds.includes('content_strategy_formats'), true);
+  assert.equal(promptIds.includes('content_strategy_distribution'), true);
+  assert.equal(promptIds.includes('content_strategy_governance'), true);
+  assert.equal(promptIds.includes('content_calendar_weekly_batch'), true);
 });
 
 test('registry rejects duplicate versions, multiple active versions, missing-original active status, and undeclared template vars', () => {
@@ -2161,6 +2173,551 @@ test('regression: marketing_strategy_goals_objectives stays under 12000-char pro
     /Compiled prompt exceeds the 12000-character server limit/i,
   );
 });
+
+test('Phase 2B Content Strategy: all 6 prompts compile under 12000/24000 limits across realistic, heavy, and extreme contexts with valid JSON, native schemas, approved-only isolation, and anti-spoofing', () => {
+  assert.equal(ENGINE_MAX_PROMPT_LENGTH, 12_000);
+  assert.equal(ENGINE_MAX_CONTEXT_LENGTH, 24_000);
+
+  const contentPromptIds = [
+    'content_strategy_objectives',
+    'content_strategy_pillars',
+    'content_strategy_themes',
+    'content_strategy_formats',
+    'content_strategy_distribution',
+    'content_strategy_governance',
+  ] as const;
+
+  const scales: Array<'realistic' | 'heavy' | 'extreme'> = ['realistic', 'heavy', 'extreme'];
+
+  for (const scale of scales) {
+    const { brand, modules } = buildMarketingBudgetFixture(scale);
+    const repeatCount = scale === 'extreme' ? 8 : scale === 'heavy' ? 5 : 2;
+    const filler =
+      scale === 'extreme'
+        ? ' Detailed strategic narrative covering multi-quarter editorial nuance and audience alignment.'.repeat(6)
+        : scale === 'heavy'
+          ? ' Extended rationale explaining audience fit and channel relevance.'.repeat(2)
+          : '';
+
+    const contentStrategyModule = makeStrategyModule({
+      id: `mod-cs-${scale}`,
+      brandId: brand.id,
+      userId: brand.userId,
+      moduleKey: 'contentStrategy',
+      status: 'in_progress',
+      content: {
+        brandId: brand.id,
+        objectives: [
+          ...Array.from({ length: repeatCount }, (_, i) => ({
+            id: `cobj-${i + 1}`,
+            title: `Content Objective ${i + 1}: Build Operator Authority`,
+            level: i === 0 ? 'primary' : 'supporting',
+            description: `Demonstrate structured diagnostic clarity.${filler}`,
+            targetAudienceOutcomes: ['Spot positioning gaps early', 'Understand category proof'],
+            desiredAudienceActions: ['Subscribe to weekly teardown', 'Request diagnostic session'],
+            alignedMarketingGoalTitle: 'SMART Goal 1: Build Predictable Inbound Advisory Pipeline',
+            alignedMarketingObjectiveTitle: 'High Priority Objective 1',
+            approved: true,
+          })),
+          {
+            id: 'cobj-unapproved',
+            title: 'UNAPPROVED_CONTENT_OBJECTIVE_MUST_NOT_LEAK',
+            approved: false,
+          },
+        ],
+        aiSuggestedObjectives: [
+          {
+            id: 'ai-cobj-1',
+            title: 'PENDING_AI_CONTENT_OBJECTIVE_MUST_NOT_LEAK',
+            suggestionStatus: 'pending_review',
+          },
+        ],
+        pillars: [
+          ...Array.from({ length: repeatCount }, (_, i) => ({
+            id: `cpil-${i + 1}`,
+            name: `Brand Pillar ${i + 1}: Diagnostic Positioning Proof`,
+            description: `Concrete teardowns of real B2B positioning breakdowns.${filler}`,
+            strategicPurpose: 'Establish credible advisor voice.',
+            targetAudienceSegment: 'Persona 1: B2B SaaS Founder',
+            relevantInterestsAndPainPoints: ['Generic agency positioning', 'Stalled pipeline'],
+            keyMessages: ['Proof beats generic agency claims'],
+            supportingTopics: ['Messaging audits', 'ICP sharpness'],
+            alignedMarketingObjectiveTitle: 'High Priority Objective 1',
+            approved: true,
+          })),
+          {
+            id: 'cpil-unapproved',
+            name: 'UNAPPROVED_CONTENT_PILLAR_MUST_NOT_LEAK',
+            approved: false,
+          },
+        ],
+        themes: [
+          ...Array.from({ length: repeatCount }, (_, i) => ({
+            id: `cthm-${i + 1}`,
+            title: `Theme ${i + 1}: Messaging Teardown Benchmarks`,
+            description: `Compare high-converting vs generic B2B landing pages.${filler}`,
+            associatedPillarId: 'cpil-1',
+            associatedPillarName: 'Brand Pillar 1: Diagnostic Positioning Proof',
+            audienceRelevance: 'Directly answers founder messaging objections.',
+            addressedNeedOrAspiration: 'Differentiate from larger competitors',
+            communicationAngle: 'Before-and-after diagnostic comparison',
+            alignedMarketingObjectiveTitle: 'High Priority Objective 1',
+            approved: true,
+          })),
+          {
+            id: 'cthm-unapproved',
+            title: 'UNAPPROVED_CONTENT_THEME_MUST_NOT_LEAK',
+            approved: false,
+          },
+        ],
+        formats: [
+          ...Array.from({ length: repeatCount }, (_, i) => ({
+            id: `cfmt-${i + 1}`,
+            formatName: `Format ${i + 1}: Annotated Teardown Carousel`,
+            purpose: `Make strategic frameworks scannable in 60 seconds.${filler}`,
+            suitablePlatforms: ['Channel 1: LinkedIn Executive Editorial'],
+            audienceSuitability: 'Built for time-pressed B2B founders.',
+            relatedPillarNames: ['Brand Pillar 1: Diagnostic Positioning Proof'],
+            approved: true,
+          })),
+          {
+            id: 'cfmt-unapproved',
+            formatName: 'UNAPPROVED_CONTENT_FORMAT_MUST_NOT_LEAK',
+            approved: false,
+          },
+        ],
+        series: [
+          ...Array.from({ length: repeatCount }, (_, i) => ({
+            id: `cser-${i + 1}`,
+            seriesName: `Series ${i + 1}: Tuesday Teardown Brief`,
+            description: `Weekly positioning audit of a live B2B SaaS homepage.${filler}`,
+            formatName: 'Format 1: Annotated Teardown Carousel',
+            suitablePlatforms: ['Channel 1: LinkedIn Executive Editorial'],
+            relatedPillarNames: ['Brand Pillar 1: Diagnostic Positioning Proof'],
+            audienceSuitability: 'B2B founders and marketing leads',
+            cadenceHint: 'Weekly',
+            approved: true,
+          })),
+          {
+            id: 'cser-unapproved',
+            seriesName: 'UNAPPROVED_CONTENT_SERIES_MUST_NOT_LEAK',
+            approved: false,
+          },
+        ],
+        distribution: [
+          ...Array.from({ length: repeatCount }, (_, i) => ({
+            id: `cdist-${i + 1}`,
+            platformName: `Channel ${i + 1}: LinkedIn Executive Editorial`,
+            channelRole: 'Primary authority channel',
+            platformConsiderations: `Lead with visual proof on slide 1.${filler}`,
+            recommendedFrequency: '2 posts/week',
+            contentMix: ['1 Teardown Carousel', '1 Operator Insight Post'],
+            distributionApproach: 'Publish Tuesday/Thursday mornings with briefing CTA.',
+            repurposingOpportunities: ['Convert top carousel into newsletter essay'],
+            publishingConstraints: 'Founder review 48h prior',
+            approved: true,
+          })),
+          {
+            id: 'cdist-unapproved',
+            platformName: 'UNAPPROVED_DISTRIBUTION_MUST_NOT_LEAK',
+            approved: false,
+          },
+        ],
+      },
+    });
+
+    const enrichedModules = modules.map((mod) => {
+      if (mod.moduleKey !== 'marketingStrategy') return mod;
+      const existingContent = (mod.content ?? {}) as Record<string, unknown>;
+      return {
+        ...mod,
+        status: 'completed' as const,
+        content: {
+          ...existingContent,
+          kpis: [
+            ...Array.from({ length: repeatCount }, (_, i) => ({
+              id: `kpi-${i + 1}`,
+              kpiName: `KPI ${i + 1}: Qualified Diagnostic Inquiries from Editorial`,
+              description: `Tracks qualified inbound consultations attributed to editorial content.${filler}`,
+              whatItMeasures: 'Weekly newsletter signups and diagnostic bookings via UTM tags',
+              relatedObjectiveId: `obj-id-${(i % 2) + 1}`,
+              relatedObjectiveTitle: `High Priority Objective ${(i % 2) + 1}: Establish Proof-Driven Authority`,
+              measurementMethod: 'UTM tracking in CRM booking form',
+              reportingFrequency: 'Monthly',
+              classification: i % 2 === 0 ? 'leading' : 'lagging',
+              baselineNote: 'Baseline established in first 30 days.',
+              approved: true,
+            })),
+            {
+              id: 'kpi-unapproved',
+              kpiName: 'UNAPPROVED_KPI_MUST_NOT_LEAK',
+              approved: false,
+            },
+          ],
+          roadmapItems: [
+            {
+              id: 'rm-1',
+              phase: 'Phase 1: Foundation',
+              activity: 'Instrument UTM attribution and publish weekly positioning teardowns',
+              description: 'Establish baseline editorial cadence and attribution.',
+              supportingObjectiveTitle: 'High Priority Objective 1: Establish Proof-Driven Authority',
+              channel: 'Channel 1: LinkedIn Executive Editorial',
+              priority: 'high',
+              suggestedTimeframe: 'Weeks 1-4',
+              approved: true,
+            },
+          ],
+        },
+      };
+    });
+
+    const verified = buildVerifiedBrandContext({
+      expectedBrandId: brand.id,
+      expectedOwnerUserId: brand.userId,
+      brand,
+      strategyModules: [...enrichedModules, contentStrategyModule],
+    });
+
+    const extraVariables = {
+      contentConstraints:
+        'Publishing Capacity: 2 LinkedIn posts/wk + 1 bi-weekly newsletter | Production Constraints: Written + visual carousels only',
+      approvedContentObjectives: 'SPOOFED_CONTENT_OBJECTIVES_OVERRIDE',
+      approvedContentPillars: 'SPOOFED_CONTENT_PILLARS_OVERRIDE',
+      approvedContentThemes: 'SPOOFED_CONTENT_THEMES_OVERRIDE',
+      approvedContentFormats: 'SPOOFED_CONTENT_FORMATS_OVERRIDE',
+      approvedContentSeries: 'SPOOFED_CONTENT_SERIES_OVERRIDE',
+      approvedContentDistribution: 'SPOOFED_CONTENT_DISTRIBUTION_OVERRIDE',
+      approvedMarketingKpis: 'SPOOFED_MARKETING_KPIS_OVERRIDE',
+    };
+
+    for (const promptId of contentPromptIds) {
+      const def = resolveExecutablePrompt(promptId);
+      assert.equal(def.targetModule, 'contentStrategy');
+      assert.equal(def.modelConfig.model, 'gemini-4-hydrogen');
+      assert.ok(
+        def.expectedOutputStructure.geminiResponseSchema,
+        `${promptId} must define native geminiResponseSchema`,
+      );
+
+      const compiled = compilePromptTemplate(def, verified, extraVariables);
+      const serializedCtx = JSON.stringify(compiled.contextPayload);
+
+      assert.ok(
+        compiled.combinedPromptText.length < ENGINE_MAX_PROMPT_LENGTH,
+        `${promptId} (${scale}) prompt length ${compiled.combinedPromptText.length} must stay < ${ENGINE_MAX_PROMPT_LENGTH}`,
+      );
+      assert.ok(
+        compiled.combinedPromptText.length <= 8_500,
+        `${promptId} (${scale}) prompt length ${compiled.combinedPromptText.length} should stay compact (<= 8500 chars) to avoid Gemini latency timeouts`,
+      );
+      assert.ok(
+        serializedCtx.length < ENGINE_MAX_CONTEXT_LENGTH,
+        `${promptId} (${scale}) context length ${serializedCtx.length} must stay < ${ENGINE_MAX_CONTEXT_LENGTH}`,
+      );
+      assert.ok(
+        serializedCtx.length <= 4_000,
+        `${promptId} (${scale}) supplemental context length ${serializedCtx.length} should stay lean (<= 4000 chars) without duplicating prompt variables`,
+      );
+
+      // Verify determinism
+      const compiledRepeat = compilePromptTemplate(def, verified, extraVariables);
+      assert.equal(compiled.combinedPromptText, compiledRepeat.combinedPromptText);
+
+      // Verify zero unapproved leakage and zero client spoofing
+      for (const forbidden of [
+        'UNAPPROVED_CONTENT_OBJECTIVE_MUST_NOT_LEAK',
+        'PENDING_AI_CONTENT_OBJECTIVE_MUST_NOT_LEAK',
+        'UNAPPROVED_CONTENT_PILLAR_MUST_NOT_LEAK',
+        'UNAPPROVED_CONTENT_THEME_MUST_NOT_LEAK',
+        'UNAPPROVED_CONTENT_FORMAT_MUST_NOT_LEAK',
+        'UNAPPROVED_CONTENT_SERIES_MUST_NOT_LEAK',
+        'UNAPPROVED_DISTRIBUTION_MUST_NOT_LEAK',
+        'UNAPPROVED_GOAL_MUST_NOT_LEAK',
+        'UNAPPROVED_PERSONA_MUST_NOT_LEAK',
+        'SPOOFED_CONTENT_OBJECTIVES_OVERRIDE',
+        'SPOOFED_CONTENT_PILLARS_OVERRIDE',
+        'SPOOFED_CONTENT_THEMES_OVERRIDE',
+        'SPOOFED_CONTENT_FORMATS_OVERRIDE',
+        'SPOOFED_CONTENT_SERIES_OVERRIDE',
+        'SPOOFED_CONTENT_DISTRIBUTION_OVERRIDE',
+        'SPOOFED_MARKETING_KPIS_OVERRIDE',
+      ]) {
+        assert.equal(
+          compiled.combinedPromptText.includes(forbidden),
+          false,
+          `${promptId} (${scale}) leaked forbidden token ${forbidden}`,
+        );
+        assert.equal(
+          serializedCtx.includes(forbidden),
+          false,
+          `${promptId} (${scale}) context leaked forbidden token ${forbidden}`,
+        );
+      }
+
+      // Every optimized variable that starts with '[' or '{' must remain valid JSON (zero mid-string truncation)
+      const baseVars = buildPromptVariableMap(verified, extraVariables);
+      const optimizedVars = optimizeContentStrategyPromptVariables(
+        def,
+        verified,
+        compiled.compiledSystemInstructions,
+        baseVars,
+      );
+      for (const [k, v] of Object.entries(optimizedVars)) {
+        const trimmed = v.trim();
+        if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+          assert.doesNotThrow(
+            () => JSON.parse(trimmed),
+            `${promptId} (${scale}) variable ${k} must remain valid JSON after budget compression`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test('Phase 2B Content Calendar weekly batch prompt compiles within strict budget across realistic/heavy/extreme fixtures, prevents unapproved/spoofed data, and executes end-to-end', async () => {
+  assert.equal(ENGINE_MAX_PROMPT_LENGTH, 12_000);
+  assert.equal(ENGINE_MAX_CONTEXT_LENGTH, 24_000);
+  assert.equal(CONTENT_CALENDAR_PROMPT_TARGET_BUDGET, 9_200);
+
+  const def = resolveExecutablePrompt('content_calendar_weekly_batch');
+  assert.equal(def.version, '1.0.0');
+  assert.equal(def.status, 'active');
+  assert.equal(def.targetModule, 'contentCalendar');
+  assert.equal(def.modelConfig.model, 'gemini-4-hydrogen');
+  assert.ok(def.expectedOutputStructure.geminiResponseSchema);
+
+  for (const scale of ['realistic', 'heavy', 'extreme'] as const) {
+    const { brand, modules: strategyModules } = buildMarketingBudgetFixture(scale);
+    const now = '2026-11-21T00:00:00.000Z';
+    const counts =
+      scale === 'realistic'
+        ? { pillars: 4, themes: 6, formats: 5, series: 3, dist: 3, prev: 6 }
+        : scale === 'heavy'
+          ? { pillars: 6, themes: 10, formats: 8, series: 5, dist: 5, prev: 15 }
+          : { pillars: 10, themes: 16, formats: 12, series: 8, dist: 8, prev: 24 };
+
+    const contentStrategyModule = makeStrategyModule({
+      id: `mod-cal-cs-${scale}`,
+      brandId: brand.id,
+      userId: brand.userId,
+      moduleKey: 'contentStrategy',
+      status: 'completed',
+      content: {
+        brandId: brand.id,
+        objectives: [
+          {
+            id: 'cobj-1',
+            title: 'Establish Proof-Led B2B Positioning Authority',
+            level: 'primary',
+            alignedMarketingObjectiveTitle: 'High Priority Objective 1: Convert B2B Founders',
+            desiredAudienceActions: ['Bookmark positioning framework', 'Request strategy sprint brief'],
+            approved: true,
+          },
+          {
+            id: 'cobj-unapproved',
+            title: 'UNAPPROVED_CAL_CONTENT_OBJ_DO_NOT_LEAK',
+            approved: false,
+          },
+        ],
+        pillars: [
+          ...Array.from({ length: counts.pillars }, (_, i) => ({
+            id: `cp-${i + 1}`,
+            name: `Approved Pillar ${i + 1}: B2B Positioning & Demand Systems`,
+            targetAudienceSegment: 'Growth-Stage B2B Founder',
+            strategicPurpose:
+              'Show concrete strategic breakdowns and before-and-after messaging diagnostics that move B2B buyers to inquire.',
+            keyMessages: [`Key insight ${i + 1}: Clarity precedes consistent pipeline growth.`],
+            alignedMarketingObjectiveTitle: 'High Priority Objective 1: Convert B2B Founders',
+            approved: true,
+          })),
+          { id: 'cp-unapproved', name: 'UNAPPROVED_CAL_PILLAR_DO_NOT_LEAK', approved: false },
+        ],
+        themes: [
+          ...Array.from({ length: counts.themes }, (_, i) => ({
+            id: `ct-${i + 1}`,
+            title: `Approved Theme ${i + 1}: Positioning Teardown Series`,
+            associatedPillarName: `Approved Pillar ${(i % counts.pillars) + 1}: B2B Positioning & Demand Systems`,
+            communicationAngle: 'Contrast generic agency copy with concrete proof-led positioning frameworks.',
+            approved: true,
+          })),
+          { id: 'ct-unapproved', title: 'UNAPPROVED_CAL_THEME_DO_NOT_LEAK', approved: false },
+        ],
+        formats: [
+          ...Array.from({ length: counts.formats }, (_, i) => ({
+            id: `cf-${i + 1}`,
+            formatName: `Approved Format ${i + 1}: Structured Breakdown`,
+            suitablePlatforms: ['LinkedIn', 'Email Newsletter'],
+            purpose: 'Deliver concise executive frameworks in under 3 minutes.',
+            approved: true,
+          })),
+          { id: 'cf-unapproved', formatName: 'UNAPPROVED_CAL_FORMAT_DO_NOT_LEAK', approved: false },
+        ],
+        series: Array.from({ length: counts.series }, (_, i) => ({
+          id: `cs-${i + 1}`,
+          seriesName: `Approved Series ${i + 1}: Weekly Positioning Clinic`,
+          formatName: 'Approved Format 1: Structured Breakdown',
+          suitablePlatforms: ['LinkedIn'],
+          cadenceHint: 'Weekly on Tuesdays',
+          approved: true,
+        })),
+        distribution: [
+          ...Array.from({ length: counts.dist }, (_, i) => ({
+            id: `cd-${i + 1}`,
+            platformName: i === 0 ? 'LinkedIn' : i === 1 ? 'Email Newsletter' : `Approved Channel ${i + 1}`,
+            recommendedFrequency: i === 0 ? '3x per week' : '1x per week',
+            contentMix: ['Framework carousels', 'Operator essays'],
+            approved: true,
+          })),
+          { id: 'cd-unapproved', platformName: 'UNAPPROVED_CAL_DIST_DO_NOT_LEAK', approved: false },
+        ],
+        createdAt: now,
+      },
+    });
+
+    const verified = buildVerifiedBrandContext({
+      expectedBrandId: brand.id,
+      expectedOwnerUserId: brand.userId,
+      brand,
+      strategyModules: [...strategyModules, contentStrategyModule],
+    });
+
+    const extraVariables = {
+      calendarBatchPlan: {
+        batchLabel: 'Week 4 (Days 22–30)',
+        startDate: '2026-12-22',
+        endDate: '2026-12-30',
+        targetItemCount: 5,
+        selectedPlatforms: ['LinkedIn', 'Email Newsletter'],
+        preferredDays: ['Monday', 'Tuesday', 'Thursday', 'Friday'],
+        preferredTime: '09:00 AM',
+        postingFrequency: '4 posts/week',
+        campaignObjectiveFocus: 'Establish Proof-Led B2B Positioning Authority',
+        contentMixPreference: 'Balanced across approved content pillars and formats',
+        teamCapacityNote: 'Lean solo founder review workflow (3 hours/week)',
+        specialDatesOrConstraints: 'Avoid hard promotional push on Dec 25; keep tone thoughtful.',
+      },
+      previouslyScheduledSummary: Array.from({ length: counts.prev }, (_, i) => ({
+        date: `2026-12-${String((i % 21) + 1).padStart(2, '0')}`,
+        platform: i % 2 === 0 ? 'LinkedIn' : 'Email Newsletter',
+        pillar: `Approved Pillar ${(i % counts.pillars) + 1}: B2B Positioning & Demand Systems`,
+        title: `Previously Scheduled Post ${i + 1}: Turning Expertise Into Inbound Pipeline`,
+      })),
+      // Spoofing attempts against protected upstream variables must be ignored
+      approvedContentPillars: 'SPOOFED_CAL_PILLARS',
+      approvedMarketingSummary: 'SPOOFED_CAL_MARKETING',
+      approvedAudienceSummary: 'SPOOFED_CAL_AUDIENCE',
+    };
+
+    const compiled = compilePromptTemplate(def, verified, extraVariables);
+    const serializedCtx = JSON.stringify(compiled.contextPayload);
+
+    assert.ok(
+      compiled.combinedPromptText.length < ENGINE_MAX_PROMPT_LENGTH,
+      `Calendar (${scale}) prompt length ${compiled.combinedPromptText.length} must stay < ${ENGINE_MAX_PROMPT_LENGTH}`,
+    );
+    assert.ok(
+      compiled.combinedPromptText.length <= CONTENT_CALENDAR_PROMPT_TARGET_BUDGET,
+      `Calendar (${scale}) prompt length ${compiled.combinedPromptText.length} must stay <= ${CONTENT_CALENDAR_PROMPT_TARGET_BUDGET}`,
+    );
+    assert.ok(
+      serializedCtx.length < ENGINE_MAX_CONTEXT_LENGTH,
+      `Calendar (${scale}) context length ${serializedCtx.length} must stay < ${ENGINE_MAX_CONTEXT_LENGTH}`,
+    );
+
+    // Deterministic output across repeated compilations
+    const compiledAgain = compilePromptTemplate(def, verified, extraVariables);
+    assert.equal(compiled.combinedPromptText, compiledAgain.combinedPromptText);
+
+    // All JSON-like optimized variables remain syntactically valid JSON
+    const baseVars = buildPromptVariableMap(verified, extraVariables);
+    const optVars = optimizeContentCalendarPromptVariables(
+      def,
+      verified,
+      compiled.compiledSystemInstructions,
+      baseVars,
+    );
+    for (const [k, v] of Object.entries(optVars)) {
+      const trimmed = v.trim();
+      if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+        assert.doesNotThrow(
+          () => JSON.parse(trimmed),
+          `Calendar (${scale}) variable ${k} must remain valid JSON`,
+        );
+      }
+    }
+
+    // Zero unapproved leakage and zero spoofing
+    for (const forbidden of [
+      'UNAPPROVED_CAL_CONTENT_OBJ_DO_NOT_LEAK',
+      'UNAPPROVED_CAL_PILLAR_DO_NOT_LEAK',
+      'UNAPPROVED_CAL_THEME_DO_NOT_LEAK',
+      'UNAPPROVED_CAL_FORMAT_DO_NOT_LEAK',
+      'UNAPPROVED_CAL_DIST_DO_NOT_LEAK',
+      'SPOOFED_CAL_PILLARS',
+      'SPOOFED_CAL_MARKETING',
+      'SPOOFED_CAL_AUDIENCE',
+    ]) {
+      assert.equal(compiled.combinedPromptText.includes(forbidden), false);
+      assert.equal(serializedCtx.includes(forbidden), false);
+    }
+
+    // Verify executePrompt succeeds end-to-end on realistic fixture
+    if (scale === 'realistic') {
+      const execResult = await executePrompt({
+        promptId: 'content_calendar_weekly_batch',
+        brandId: brand.id,
+        brand,
+        expectedOwnerUserId: brand.userId,
+        strategyModules: [...strategyModules, contentStrategyModule],
+        variables: extraVariables,
+        executeAi: async (req) => {
+          assert.equal(req.responseMimeType, 'application/json');
+          assert.ok(req.responseSchema);
+          assert.ok(req.prompt.length <= CONTENT_CALENDAR_PROMPT_TARGET_BUDGET);
+          return {
+            text: JSON.stringify({
+              suppliedFactsUsed: ['Approved Pillar 1', 'LinkedIn'],
+              missingContextNotes: [],
+              researchCaveat: 'Review planned entries before drafting.',
+              aiSuggestions: {
+                batchSummary: 'Balanced positioning diagnostics across LinkedIn and Email.',
+                pacingNotes: ['Spaced Tuesday/Thursday posts to respect founder capacity.'],
+              },
+              items: [
+                {
+                  scheduledDate: '2026-12-22',
+                  suggestedTime: '09:00 AM',
+                  platform: 'LinkedIn',
+                  title: 'Year-End B2B Positioning Diagnostic',
+                  contentPillar: 'Approved Pillar 1: B2B Positioning & Demand Systems',
+                  contentTheme: 'Approved Theme 1: Positioning Teardown Series',
+                  contentFormat: 'Approved Format 1: Structured Breakdown',
+                  contentSeries: 'Approved Series 1: Weekly Positioning Clinic',
+                  targetAudience: 'Approved Persona 1: Growth-Stage B2B Founder',
+                  audiencePainPoint: 'Unpredictable referral pipeline',
+                  contentObjective: 'Establish Proof-Led B2B Positioning Authority',
+                  relatedMarketingObjective: 'High Priority Objective 1: Convert B2B Founders',
+                  coreMessage: 'Audit positioning clarity before planning Q1 campaigns.',
+                  suggestedAngle: '5-minute executive self-check',
+                  intendedCta: 'Save this checklist for Q1 planning',
+                  relevantKpi: 'Qualified Discovery Calls',
+                  productionNotes: 'Keep slide copy crisp and verifiable.',
+                },
+              ],
+            }),
+            model: 'gemini-4-hydrogen',
+            generatedAt: now,
+          };
+        },
+      });
+      assert.equal(execResult.status, 'success');
+      assert.equal(execResult.targetModule, 'contentCalendar');
+    }
+  }
+});
+
+
 
 
 

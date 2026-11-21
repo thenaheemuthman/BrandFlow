@@ -1,11 +1,13 @@
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import type {
+  AiErrorCategory,
   AiGenerateResponse,
   AiResponseMimeType,
   AllowedGeminiModel,
 } from '../src/types/brand.ts';
 
 export const DEFAULT_GEMINI_MODEL: AllowedGeminiModel = 'gemini-4-hydrogen';
+export const FALLBACK_GEMINI_MODEL: AllowedGeminiModel = 'gemini-3.1-flash-lite';
 
 export const ALLOWED_GEMINI_MODELS: readonly AllowedGeminiModel[] = [
   'gemini-4-hydrogen',
@@ -23,7 +25,10 @@ export const MAX_CONTEXT_LENGTH = 24_000;
 export const MAX_RESPONSE_SCHEMA_LENGTH = 16_000;
 export const DEFAULT_AI_TIMEOUT_MS = 50_000;
 export const DEFAULT_AI_MAX_RETRIES = 2;
-export const DEFAULT_AI_RETRY_BASE_DELAY_MS = 400;
+export const DEFAULT_AI_RETRY_BASE_DELAY_MS = 900;
+export const DEFAULT_PRIMARY_ATTEMPT_TIMEOUT_MS = 22_000;
+export const DEFAULT_SECOND_ATTEMPT_TIMEOUT_MS = 14_000;
+export const MIN_FALLBACK_BUDGET_MS = 6_000;
 
 export interface ValidatedAiGenerateInput {
   prompt: string;
@@ -50,12 +55,21 @@ export interface GeminiClientLike {
   };
 }
 
+export interface GeminiDiagnosticContext {
+  requestId?: string;
+  brandId?: string;
+  promptId?: string;
+  stage?: string;
+}
+
 export type GeminiGenerateFn = (
   input: ValidatedAiGenerateInput,
+  diagnostics?: GeminiDiagnosticContext,
 ) => Promise<AiGenerateResponse>;
 
 export class GeminiConfigError extends Error {
   readonly statusCode = 503;
+  readonly errorCategory: AiErrorCategory = 'provider_unavailable';
 
   constructor(message = 'AI generation is not configured on the server (missing GEMINI_API_KEY).') {
     super(message);
@@ -65,6 +79,7 @@ export class GeminiConfigError extends Error {
 
 export class GeminiTimeoutError extends Error {
   readonly statusCode = 504;
+  readonly errorCategory: AiErrorCategory = 'request_timeout';
 
   constructor(message = 'AI generation timed out. Please try again.') {
     super(message);
@@ -74,11 +89,23 @@ export class GeminiTimeoutError extends Error {
 
 export class GeminiProviderError extends Error {
   readonly statusCode: number;
+  readonly errorCategory: AiErrorCategory;
 
-  constructor(message: string, statusCode = 502) {
+  constructor(
+    message: string,
+    statusCode = 502,
+    errorCategory?: AiErrorCategory,
+  ) {
     super(message);
     this.name = 'GeminiProviderError';
     this.statusCode = statusCode;
+    this.errorCategory =
+      errorCategory ??
+      (statusCode === 429
+        ? 'rate_limited'
+        : statusCode === 503
+          ? 'provider_unavailable'
+          : 'provider_unavailable');
   }
 }
 
@@ -326,6 +353,7 @@ export function sanitizeProviderError(err: unknown): GeminiProviderError | Gemin
     return new GeminiProviderError(
       'AI provider rate limit reached. Please wait a moment and try again.',
       429,
+      'rate_limited',
     );
   }
 
@@ -337,6 +365,7 @@ export function sanitizeProviderError(err: unknown): GeminiProviderError | Gemin
     return new GeminiProviderError(
       'AI provider authentication failed. Verify the server Gemini API configuration.',
       502,
+      'authentication_failure',
     );
   }
 
@@ -344,6 +373,7 @@ export function sanitizeProviderError(err: unknown): GeminiProviderError | Gemin
     return new GeminiProviderError(
       'AI provider rejected the generation request parameters.',
       502,
+      'invalid_ai_response',
     );
   }
 
@@ -351,12 +381,22 @@ export function sanitizeProviderError(err: unknown): GeminiProviderError | Gemin
     return new GeminiProviderError(
       'AI service is temporarily busy. Please try again in a moment.',
       503,
+      'provider_unavailable',
+    );
+  }
+
+  if (/fetch failed|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up/i.test(rawMessage)) {
+    return new GeminiProviderError(
+      'Connection to the AI provider was interrupted before a response arrived. Please try again.',
+      502,
+      'network_failure',
     );
   }
 
   return new GeminiProviderError(
     'AI generation failed due to an upstream provider error.',
     502,
+    'provider_unavailable',
   );
 }
 
@@ -366,13 +406,30 @@ function logSanitizedGeminiFailure(details: {
   maxAttempts: number;
   err: unknown;
   mappedStatus: number;
+  errorCategory: AiErrorCategory;
+  elapsedMs: number;
   willRetry: boolean;
+  nextModel?: AllowedGeminiModel;
+  diagnostics?: GeminiDiagnosticContext;
 }) {
   const upstreamStatus = readNumericStatus(details.err);
   const errorName = details.err instanceof Error ? details.err.name : 'UnknownError';
+  const fallbackNote =
+    details.willRetry && details.nextModel && details.nextModel !== details.model
+      ? ` nextModel=${details.nextModel}`
+      : '';
+  const diagParts = [
+    details.diagnostics?.requestId ? `requestId=${details.diagnostics.requestId}` : '',
+    details.diagnostics?.brandId ? `brandId=${details.diagnostics.brandId}` : '',
+    details.diagnostics?.promptId ? `promptId=${details.diagnostics.promptId}` : '',
+    details.diagnostics?.stage ? `stage=${details.diagnostics.stage}` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const prefix = diagParts ? `${diagParts} ` : '';
   // Log only sanitized metadata — never log API keys, URLs, prompt text, or raw error messages.
   console.error(
-    `[Gemini] model=${details.model} attempt=${details.attempt}/${details.maxAttempts} upstreamStatus=${upstreamStatus ?? 'none'} errorName=${errorName} mappedStatus=${details.mappedStatus} willRetry=${details.willRetry}`,
+    `[Gemini] ${prefix}model=${details.model} attempt=${details.attempt}/${details.maxAttempts} elapsedMs=${details.elapsedMs} upstreamStatus=${upstreamStatus ?? 'none'} errorName=${errorName} errorCategory=${details.errorCategory} mappedStatus=${details.mappedStatus} willRetry=${details.willRetry}${fallbackNote}`,
   );
 }
 
@@ -393,14 +450,47 @@ function waitMs(ms: number): Promise<void> {
   });
 }
 
+function computeAttemptTimeoutMs(params: {
+  attempt: number;
+  maxAttempts: number;
+  remainingMs: number;
+  totalTimeoutMs: number;
+  activeModel: AllowedGeminiModel;
+  overridePrimaryTimeoutMs?: number;
+}): number {
+  const { attempt, maxAttempts, remainingMs, totalTimeoutMs, activeModel, overridePrimaryTimeoutMs } =
+    params;
+
+  // On final attempt or when already on the fast fallback model, give it the full remaining deadline.
+  if (attempt >= maxAttempts || activeModel === FALLBACK_GEMINI_MODEL) {
+    return remainingMs;
+  }
+
+  // Respect explicit test/caller override for per-attempt primary cap.
+  if (typeof overridePrimaryTimeoutMs === 'number' && overridePrimaryTimeoutMs > 0) {
+    return Math.min(remainingMs, overridePrimaryTimeoutMs);
+  }
+
+  // Only apply per-attempt caps when total timeout is large enough to allow a clean fallback retry.
+  if (totalTimeoutMs < 20_000) {
+    return remainingMs;
+  }
+
+  const cap =
+    attempt === 1 ? DEFAULT_PRIMARY_ATTEMPT_TIMEOUT_MS : DEFAULT_SECOND_ATTEMPT_TIMEOUT_MS;
+  return Math.min(remainingMs, cap);
+}
+
 export async function generateGeminiContent(
   input: ValidatedAiGenerateInput,
   options?: {
     apiKey?: string;
     timeoutMs?: number;
+    attemptTimeoutMs?: number;
     maxRetries?: number;
     retryBaseDelayMs?: number;
     clientFactory?: (apiKey: string) => GeminiClientLike;
+    diagnostics?: GeminiDiagnosticContext;
   },
 ): Promise<AiGenerateResponse> {
   const apiKey = (options?.apiKey ?? process.env.GEMINI_API_KEY ?? '').trim();
@@ -408,6 +498,7 @@ export async function generateGeminiContent(
     throw new GeminiConfigError();
   }
 
+  const startedAt = Date.now();
   const timeoutMs = options?.timeoutMs ?? DEFAULT_AI_TIMEOUT_MS;
   const maxRetries = Math.max(0, options?.maxRetries ?? DEFAULT_AI_MAX_RETRIES);
   const retryBaseDelayMs = Math.max(
@@ -418,8 +509,9 @@ export async function generateGeminiContent(
   const clientFactory = options?.clientFactory ?? defaultClientFactory;
   const client = clientFactory(apiKey);
   const contents = buildGeminiContents(input.prompt, input.contextText);
-  const deadline = Date.now() + timeoutMs;
+  const deadline = startedAt + timeoutMs;
 
+  let activeModel: AllowedGeminiModel = input.model;
   let lastMappedError: GeminiProviderError | GeminiTimeoutError | null = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -428,14 +520,28 @@ export async function generateGeminiContent(
       throw new GeminiTimeoutError();
     }
 
+    const attemptTimeoutMs = computeAttemptTimeoutMs({
+      attempt,
+      maxAttempts,
+      remainingMs,
+      totalTimeoutMs: timeoutMs,
+      activeModel,
+      overridePrimaryTimeoutMs: options?.attemptTimeoutMs,
+    });
+    const isCappedAttempt = attemptTimeoutMs < remainingMs - 50;
+
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let perAttemptTimedOut = false;
 
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
+        if (isCappedAttempt) {
+          perAttemptTimedOut = true;
+        }
         controller.abort();
         reject(new GeminiTimeoutError());
-      }, remainingMs);
+      }, attemptTimeoutMs);
     });
 
     const config: {
@@ -447,7 +553,7 @@ export async function generateGeminiContent(
       abortSignal: controller.signal,
     };
 
-    if (input.model === 'gemini-4-hydrogen') {
+    if (activeModel === 'gemini-4-hydrogen') {
       config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
     }
 
@@ -462,7 +568,7 @@ export async function generateGeminiContent(
     try {
       const response = await Promise.race([
         client.models.generateContent({
-          model: input.model,
+          model: activeModel,
           contents,
           config,
         }),
@@ -474,12 +580,13 @@ export async function generateGeminiContent(
         throw new GeminiProviderError(
           'AI provider returned an empty response. Please try again.',
           502,
+          'invalid_ai_response',
         );
       }
 
       return {
         text,
-        model: input.model,
+        model: activeModel,
         generatedAt: new Date().toISOString(),
       };
     } catch (err) {
@@ -490,25 +597,47 @@ export async function generateGeminiContent(
       const mapped = sanitizeProviderError(err);
       lastMappedError = mapped;
 
-      const retryDelayMs = retryBaseDelayMs * Math.pow(2, attempt - 1);
-      const hasBudgetForRetry = deadline - Date.now() > retryDelayMs + 50;
-      const willRetry =
+      const retryDelayMs = perAttemptTimedOut
+        ? Math.min(retryBaseDelayMs, 250)
+        : retryBaseDelayMs * Math.pow(2, attempt - 1);
+      const minBudgetNeeded = perAttemptTimedOut
+        ? Math.min(MIN_FALLBACK_BUDGET_MS, Math.max(50, Math.floor(timeoutMs * 0.25)))
+        : 50;
+      const hasBudgetForRetry = deadline - Date.now() > retryDelayMs + minBudgetNeeded;
+
+      const canRetry =
         attempt < maxAttempts &&
-        isRetryableProviderError(err) &&
-        hasBudgetForRetry;
+        hasBudgetForRetry &&
+        (isRetryableProviderError(err) || perAttemptTimedOut);
+
+      // Switch to fast fallback model when primary model stalls past its per-attempt cap
+      // OR when entering the final retry attempt after consecutive overload/transient errors.
+      const shouldFallbackToLite =
+        canRetry &&
+        activeModel === 'gemini-4-hydrogen' &&
+        (perAttemptTimedOut || attempt === maxAttempts - 1);
+      const nextModel: AllowedGeminiModel = shouldFallbackToLite
+        ? FALLBACK_GEMINI_MODEL
+        : activeModel;
 
       logSanitizedGeminiFailure({
-        model: input.model,
+        model: activeModel,
         attempt,
         maxAttempts,
         err,
         mappedStatus: mapped.statusCode,
-        willRetry,
+        errorCategory: mapped.errorCategory,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        willRetry: canRetry,
+        nextModel,
+        diagnostics: options?.diagnostics,
       });
 
-      if (!willRetry) {
+      if (!canRetry) {
         throw mapped;
       }
+
+      activeModel = nextModel;
 
       if (retryDelayMs > 0) {
         await waitMs(retryDelayMs);

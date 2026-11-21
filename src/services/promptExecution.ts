@@ -14,6 +14,7 @@ export interface ExecuteBrandPromptInput {
   includeApprovedModules?: boolean;
   expectedOwnerUserId?: string;
   registry?: PromptRegistry;
+  signal?: AbortSignal;
 }
 
 /**
@@ -55,5 +56,6 @@ export async function executeBrandPrompt(
     version: input.version,
     variables: input.variables,
     includeApprovedModules: input.includeApprovedModules,
+    signal: input.signal,
   });
 }

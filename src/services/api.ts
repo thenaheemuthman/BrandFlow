@@ -6,56 +6,38 @@ import type {
   Brand,
   BrandFormInput,
   BrandStrategyModule,
+  ContentCalendar,
+  ContentCalendarItem,
+  ContentCalendarWithItems,
+  CreateContentCalendarInput,
+  CreateContentCalendarItemInput,
   StrategyModuleKey,
+  UpdateContentCalendarInput,
+  UpdateContentCalendarItemInput,
   UpsertBrandModuleInput,
   UserProfile,
   WorkspaceOverviewResponse,
 } from '../types/brand';
 import type { PromptExecutionResult } from '../prompts/types';
-import { parsePromptExecutionResponse } from './promptResponseParser';
+import {
+  fetchJsonWithResilience,
+  fetchPromptExecutionWithResilience,
+} from './apiResilience';
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error('Please sign in to continue.');
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${session.access_token}`,
-      ...(options?.headers ?? {}),
+  return fetchJsonWithResilience<T>({
+    url,
+    init: {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+        ...(options?.headers ?? {}),
+      },
     },
   });
-
-  const bodyText = await response.text();
-  const contentType = response.headers.get('content-type');
-  let data: Record<string, unknown> | null = null;
-  try {
-    const parsed: unknown = bodyText.trim() ? JSON.parse(bodyText) : null;
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      data = parsed as Record<string, unknown>;
-    }
-  } catch {
-    data = null;
-  }
-
-  if (!response.ok) {
-    const message =
-      typeof data?.error === 'string' && data.error
-        ? data.error
-        : `Request failed with status ${response.status}`;
-    throw new Error(message);
-  }
-
-  if (data === null) {
-    if (contentType && /text\/html/i.test(contentType)) {
-      throw new Error(
-        'The server returned a temporary gateway page instead of JSON. Please try again.',
-      );
-    }
-    throw new Error('The server returned an unreadable non-JSON response. Please try again.');
-  }
-
-  return data as T;
 }
 
 export const api = {
@@ -158,6 +140,117 @@ export const api = {
     });
   },
 
+  listContentCalendars(brandId: string): Promise<{ calendars: ContentCalendar[] }> {
+    return requestJson<{ calendars: ContentCalendar[] }>(
+      `/api/brands/${encodeURIComponent(brandId)}/calendars`,
+    );
+  },
+
+  getContentCalendar(
+    brandId: string,
+    calendarId: string,
+  ): Promise<{ calendar: ContentCalendarWithItems }> {
+    return requestJson<{ calendar: ContentCalendarWithItems }>(
+      `/api/brands/${encodeURIComponent(brandId)}/calendars/${encodeURIComponent(calendarId)}`,
+    );
+  },
+
+  createContentCalendar(
+    brandId: string,
+    input: CreateContentCalendarInput,
+  ): Promise<{ calendar: ContentCalendar }> {
+    return requestJson<{ calendar: ContentCalendar }>(
+      `/api/brands/${encodeURIComponent(brandId)}/calendars`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
+    );
+  },
+
+  updateContentCalendar(
+    brandId: string,
+    calendarId: string,
+    patch: UpdateContentCalendarInput,
+  ): Promise<{ calendar: ContentCalendar }> {
+    return requestJson<{ calendar: ContentCalendar }>(
+      `/api/brands/${encodeURIComponent(brandId)}/calendars/${encodeURIComponent(calendarId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      },
+    );
+  },
+
+  deleteContentCalendar(
+    brandId: string,
+    calendarId: string,
+  ): Promise<{ deleted: boolean }> {
+    return requestJson<{ deleted: boolean }>(
+      `/api/brands/${encodeURIComponent(brandId)}/calendars/${encodeURIComponent(calendarId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
+  },
+
+  saveCalendarBatchItems(
+    brandId: string,
+    calendarId: string,
+    items: CreateContentCalendarItemInput[],
+    replaceBatchIndex?: number | null,
+  ): Promise<{ items: ContentCalendarItem[] }> {
+    return requestJson<{ items: ContentCalendarItem[] }>(
+      `/api/brands/${encodeURIComponent(brandId)}/calendars/${encodeURIComponent(calendarId)}/items/batch`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ items, replaceBatchIndex }),
+      },
+    );
+  },
+
+  createCalendarItem(
+    brandId: string,
+    calendarId: string,
+    input: CreateContentCalendarItemInput,
+  ): Promise<{ item: ContentCalendarItem }> {
+    return requestJson<{ item: ContentCalendarItem }>(
+      `/api/brands/${encodeURIComponent(brandId)}/calendars/${encodeURIComponent(calendarId)}/items`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
+    );
+  },
+
+  updateCalendarItem(
+    brandId: string,
+    calendarId: string,
+    itemId: string,
+    patch: UpdateContentCalendarItemInput,
+  ): Promise<{ item: ContentCalendarItem }> {
+    return requestJson<{ item: ContentCalendarItem }>(
+      `/api/brands/${encodeURIComponent(brandId)}/calendars/${encodeURIComponent(calendarId)}/items/${encodeURIComponent(itemId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      },
+    );
+  },
+
+  deleteCalendarItem(
+    brandId: string,
+    calendarId: string,
+    itemId: string,
+  ): Promise<{ deleted: boolean }> {
+    return requestJson<{ deleted: boolean }>(
+      `/api/brands/${encodeURIComponent(brandId)}/calendars/${encodeURIComponent(calendarId)}/items/${encodeURIComponent(itemId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
+  },
+
   async executeBrandPrompt(
     brandId: string,
     input: {
@@ -165,29 +258,24 @@ export const api = {
       version?: string;
       variables?: Record<string, unknown>;
       includeApprovedModules?: boolean;
+      signal?: AbortSignal;
     },
   ): Promise<PromptExecutionResult> {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) throw new Error('Please sign in to continue.');
 
-    const response = await fetch(
-      `/api/brands/${encodeURIComponent(brandId)}/prompts/execute`,
-      {
+    const { signal, ...body } = input;
+    return fetchPromptExecutionWithResilience({
+      url: `/api/brands/${encodeURIComponent(brandId)}/prompts/execute`,
+      init: {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify(input),
+        body: JSON.stringify(body),
+        signal,
       },
-    );
-
-    const bodyText = await response.text();
-    return parsePromptExecutionResponse({
-      ok: response.ok,
-      status: response.status,
-      contentType: response.headers.get('content-type'),
-      bodyText,
     });
   },
 };

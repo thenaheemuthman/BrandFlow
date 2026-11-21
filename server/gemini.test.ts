@@ -4,6 +4,7 @@ import { ThinkingLevel } from '@google/genai';
 import {
   DEFAULT_AI_TIMEOUT_MS,
   DEFAULT_GEMINI_MODEL,
+  FALLBACK_GEMINI_MODEL,
   GeminiConfigError,
   GeminiProviderError,
   GeminiTimeoutError,
@@ -460,4 +461,162 @@ test('validateAiGenerateBody and generateGeminiContent validate and forward Gemi
     assert.deepEqual(capturedSchema, validSchema);
   });
 });
+
+test('generateGeminiContent falls back to gemini-3.1-flash-lite after consecutive 503 overload errors or primary per-attempt timeout', async () => {
+  const schema = {
+    type: 'OBJECT',
+    properties: {
+      objectives: { type: 'ARRAY', items: { type: 'STRING' } },
+    },
+    required: ['objectives'],
+  };
+
+  await withEnv({ GEMINI_API_KEY: 'AIzaSyFallbackTestKey98765' }, async () => {
+    // 1. Consecutive 503 overload on gemini-4-hydrogen falls back to gemini-3.1-flash-lite on Attempt 3
+    const seenModels503: string[] = [];
+    const seenThinking503: Array<unknown> = [];
+    let seenFallbackSchema: Record<string, unknown> | undefined;
+
+    const recovered503 = await generateGeminiContent(
+      {
+        prompt: 'Generate content objectives',
+        model: 'gemini-4-hydrogen',
+        responseMimeType: 'application/json',
+        responseSchema: schema,
+      },
+      {
+        maxRetries: 2,
+        retryBaseDelayMs: 5,
+        clientFactory: () => ({
+          models: {
+            async generateContent(params) {
+              seenModels503.push(params.model);
+              seenThinking503.push(params.config?.thinkingConfig);
+              if (params.model === 'gemini-4-hydrogen') {
+                const err = new Error('503 UNAVAILABLE overloaded') as Error & { status?: number };
+                err.status = 503;
+                throw err;
+              }
+              seenFallbackSchema = params.config?.responseSchema;
+              return { text: '{"objectives":["Recovered via fallback"]}' };
+            },
+          },
+        }),
+      },
+    );
+
+    assert.deepEqual(seenModels503, [
+      'gemini-4-hydrogen',
+      'gemini-4-hydrogen',
+      FALLBACK_GEMINI_MODEL,
+    ]);
+    assert.equal((seenThinking503[0] as { thinkingLevel?: ThinkingLevel })?.thinkingLevel, ThinkingLevel.LOW);
+    assert.equal(seenThinking503[2], undefined);
+    assert.deepEqual(seenFallbackSchema, schema);
+    assert.equal(recovered503.model, FALLBACK_GEMINI_MODEL);
+    assert.equal(recovered503.text, '{"objectives":["Recovered via fallback"]}');
+
+    // 2. Stalled Attempt 1 hitting per-attempt timeout cap aborts primary and recovers immediately on gemini-3.1-flash-lite
+    const seenModelsTimeout: string[] = [];
+    let primaryAborted = false;
+
+    const recoveredTimeout = await generateGeminiContent(
+      {
+        prompt: 'Generate content pillars',
+        model: 'gemini-4-hydrogen',
+        responseMimeType: 'application/json',
+        responseSchema: schema,
+      },
+      {
+        timeoutMs: 600,
+        attemptTimeoutMs: 40,
+        maxRetries: 2,
+        retryBaseDelayMs: 5,
+        clientFactory: () => ({
+          models: {
+            generateContent(params) {
+              seenModelsTimeout.push(params.model);
+              if (params.model === 'gemini-4-hydrogen') {
+                return new Promise((_resolve, reject) => {
+                  params.config?.abortSignal?.addEventListener('abort', () => {
+                    primaryAborted = true;
+                    reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+                  });
+                });
+              }
+              return Promise.resolve({ text: '{"objectives":["Recovered after timeout"]}' });
+            },
+          },
+        }),
+      },
+    );
+
+    assert.equal(primaryAborted, true);
+    assert.deepEqual(seenModelsTimeout, ['gemini-4-hydrogen', FALLBACK_GEMINI_MODEL]);
+    assert.equal(recoveredTimeout.model, FALLBACK_GEMINI_MODEL);
+    assert.equal(recoveredTimeout.text, '{"objectives":["Recovered after timeout"]}');
+  });
+});
+
+test('Gemini errors carry explicit errorCategory values and diagnostic logs include requestId/stage without raw prompts or secrets', async () => {
+  const mapped429 = sanitizeProviderError(Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 }));
+  assert.equal(mapped429.errorCategory, 'rate_limited');
+
+  const mapped503 = sanitizeProviderError(Object.assign(new Error('503 UNAVAILABLE'), { status: 503 }));
+  assert.equal(mapped503.errorCategory, 'provider_unavailable');
+
+  const mapped401 = sanitizeProviderError(Object.assign(new Error('API key invalid'), { status: 401 }));
+  assert.equal(mapped401.errorCategory, 'authentication_failure');
+
+  const mappedNet = sanitizeProviderError(new Error('fetch failed ECONNRESET'));
+  assert.equal(mappedNet.errorCategory, 'network_failure');
+
+  const timeoutErr = new GeminiTimeoutError();
+  assert.equal(timeoutErr.errorCategory, 'request_timeout');
+
+  const configErr = new GeminiConfigError();
+  assert.equal(configErr.errorCategory, 'provider_unavailable');
+
+  // Empty model output maps to invalid_ai_response and logs sanitized diagnostic metadata
+  const logged: string[] = [];
+  const origErr = console.error;
+  console.error = (...args: unknown[]) => logged.push(args.map(String).join(' '));
+  try {
+    await withEnv({ GEMINI_API_KEY: 'AIzaSyDiagSecret12345' }, async () => {
+      await assert.rejects(
+        () =>
+          generateGeminiContent(
+            { prompt: 'SECRET_PROMPT_TEXT_MUST_NOT_APPEAR_IN_LOGS', model: 'gemini-4-hydrogen' },
+            {
+              diagnostics: {
+                requestId: 'req-diag-777',
+                brandId: 'brand-diag-1',
+                promptId: 'content_calendar_weekly_batch',
+                stage: 'prompt_execute',
+              },
+              clientFactory: () => ({
+                models: {
+                  async generateContent() {
+                    return { text: '   ' };
+                  },
+                },
+              }),
+            },
+          ),
+        (err: unknown) =>
+          err instanceof GeminiProviderError && err.errorCategory === 'invalid_ai_response',
+      );
+    });
+  } finally {
+    console.error = origErr;
+  }
+
+  const combinedLogs = logged.join('\n');
+  assert.match(combinedLogs, /req-diag-777/);
+  assert.match(combinedLogs, /content_calendar_weekly_batch/);
+  assert.equal(combinedLogs.includes('SECRET_PROMPT_TEXT_MUST_NOT_APPEAR_IN_LOGS'), false);
+  assert.equal(combinedLogs.includes('AIzaSyDiagSecret12345'), false);
+});
+
+
 

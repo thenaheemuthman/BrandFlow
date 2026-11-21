@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createApiApp, type CreateApiAppOptions } from './apiApp.ts';
+import { LocalJsonStorageRepository } from './storage.ts';
 import {
   DEFAULT_GEMINI_MODEL,
   GeminiProviderError,
@@ -324,7 +328,7 @@ test('Phase 2A strategy module endpoints validate brand IDs, module keys, payloa
 
     // Unsupported module key
     const badKeyRes = await fetch(
-      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/contentStrategy`,
+      `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/contentCalendar`,
       { headers: authHeaders },
     );
     assert.equal(badKeyRes.status, 400);
@@ -1693,5 +1697,469 @@ test('regression: POST /api/brands/:id/prompts/execute optimizes large KPI and R
     },
   );
 });
+
+test('Phase 2B contentStrategy module supports authenticated CRUD persistence and end-to-end prompt execution under server limits', async () => {
+  const captured: Array<{
+    promptLen: number;
+    contextLen: number;
+    mime?: string;
+    hasSchema: boolean;
+  }> = [];
+
+  await withTestServer(
+    async (baseUrl, state) => {
+      const authHeaders = {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer owner-token',
+      };
+
+      // 1. Authenticated CRUD on /strategy-modules/contentStrategy
+      const putRes = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/contentStrategy`,
+        {
+          method: 'PUT',
+          headers: authHeaders,
+          body: JSON.stringify({
+            status: 'in_progress',
+            content: {
+              brandId: OWNED_BRAND_ID,
+              objectives: [
+                {
+                  id: 'cobj-1',
+                  title: 'Build Clinical Authority',
+                  level: 'primary',
+                  description: 'Clarify preventive diagnostics.',
+                  approved: true,
+                },
+              ],
+            },
+            promptId: 'content_strategy_objectives',
+            promptVersion: '1.0.0',
+            model: DEFAULT_GEMINI_MODEL,
+          }),
+        },
+      );
+      assert.equal(putRes.status, 200);
+      const putBody = (await putRes.json()) as {
+        module: { moduleKey: string; status: string };
+      };
+      assert.equal(putBody.module.moduleKey, 'contentStrategy');
+      assert.equal(putBody.module.status, 'in_progress');
+      assert.equal(
+        state.brands.get(OWNED_BRAND_ID)?.module_statuses.contentStrategy,
+        'in_progress',
+      );
+
+      // 2. Seed completed upstream modules so content_strategy_objectives compiles authoritatively
+      const now = '2026-11-20T00:00:00.000Z';
+      state.modules.set(`${OWNED_BRAND_ID}:brandFoundation`, {
+        id: '44444444-4444-4444-8444-444444444451',
+        user_id: OWNER_ID,
+        brand_id: OWNED_BRAND_ID,
+        module_key: 'brandFoundation',
+        status: 'completed',
+        content: {
+          brandId: OWNED_BRAND_ID,
+          approvedSummary: {
+            positioningStatement: 'Clinician-led preventive biomarker clarity for Austin adults.',
+            differentiationAttributes: ['Clinician-led', 'Quarterly tracking'],
+          },
+        },
+        created_at: now,
+        updated_at: now,
+      });
+      state.modules.set(`${OWNED_BRAND_ID}:brandMessaging`, {
+        id: '44444444-4444-4444-8444-444444444452',
+        user_id: OWNER_ID,
+        brand_id: OWNED_BRAND_ID,
+        module_key: 'brandMessaging',
+        status: 'completed',
+        content: {
+          brandId: OWNED_BRAND_ID,
+          approvedSummary: {
+            coreValueProposition: 'Plain-language physician biomarker guidance.',
+            messagingPillars: [{ title: 'Clinical Clarity', summary: 'No wellness hype.' }],
+            voiceAndTone: { attributes: ['Calm', 'Evidence-led'], guardrails: ['Avoid hype'] },
+          },
+        },
+        created_at: now,
+        updated_at: now,
+      });
+      state.modules.set(`${OWNED_BRAND_ID}:customerIntelligence`, {
+        id: '44444444-4444-4444-8444-444444444453',
+        user_id: OWNER_ID,
+        brand_id: OWNED_BRAND_ID,
+        module_key: 'customerIntelligence',
+        status: 'completed',
+        content: {
+          brandId: OWNED_BRAND_ID,
+          approvedSummary: {
+            personas: [
+              { id: 'p1', name: 'Austin Founder', summary: 'Wants proactive longevity clarity.' },
+            ],
+            interests: [
+              {
+                id: 'i1',
+                topic: 'Biomarker Clarity',
+                frequentQuestions: ['Which markers matter first?'],
+              },
+            ],
+          },
+        },
+        created_at: now,
+        updated_at: now,
+      });
+      state.modules.set(`${OWNED_BRAND_ID}:marketingStrategy`, {
+        id: '44444444-4444-4444-8444-444444444454',
+        user_id: OWNER_ID,
+        brand_id: OWNED_BRAND_ID,
+        module_key: 'marketingStrategy',
+        status: 'completed',
+        content: {
+          brandId: OWNED_BRAND_ID,
+          goals: [
+            {
+              id: 'g1',
+              title: 'Grow Consultation Pipeline',
+              targetAudience: 'Austin Founder',
+              recommendedTimeframe: 'Next 90 days',
+              approved: true,
+            },
+          ],
+          objectives: [
+            {
+              id: 'o1',
+              title: 'Establish Clinician Authority',
+              priority: 'high',
+              approved: true,
+            },
+          ],
+          channels: [
+            {
+              id: 'c1',
+              channelName: 'LinkedIn',
+              priority: 'primary',
+              approved: true,
+            },
+          ],
+          tactics: [
+            {
+              id: 't1',
+              tacticName: 'Weekly Biomarker Breakdown',
+              recommendedChannelName: 'LinkedIn',
+              approved: true,
+            },
+          ],
+          kpis: [
+            {
+              id: 'k1',
+              kpiName: 'Qualified Briefing Signups',
+              classification: 'leading',
+              approved: true,
+            },
+          ],
+        },
+        created_at: now,
+        updated_at: now,
+      });
+
+      const execRes = await fetch(`${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          promptId: 'content_strategy_objectives',
+          includeApprovedModules: true,
+          variables: { contentConstraints: 'Publishing Capacity: 2 LinkedIn posts/week' },
+        }),
+      });
+      assert.equal(execRes.status, 200);
+      const execBody = (await execRes.json()) as {
+        status: string;
+        metadata: { promptId: string; targetModule: string };
+        output: { objectives: unknown[] };
+      };
+      assert.equal(execBody.status, 'success');
+      assert.equal(execBody.metadata.promptId, 'content_strategy_objectives');
+      assert.equal(execBody.metadata.targetModule, 'contentStrategy');
+      assert.equal(execBody.output.objectives.length, 2);
+
+      assert.equal(captured.length, 1);
+      assert.ok(captured[0].promptLen < MAX_PROMPT_LENGTH);
+      assert.ok(captured[0].contextLen < MAX_CONTEXT_LENGTH);
+      assert.equal(captured[0].mime, 'application/json');
+      assert.equal(captured[0].hasSchema, true);
+
+      const delRes = await fetch(
+        `${baseUrl}/api/brands/${OWNED_BRAND_ID}/strategy-modules/contentStrategy`,
+        { method: 'DELETE', headers: authHeaders },
+      );
+      assert.equal(delRes.status, 200);
+      assert.equal(
+        state.brands.get(OWNED_BRAND_ID)?.module_statuses.contentStrategy,
+        'not_started',
+      );
+    },
+    {
+      generateAiContent: async (input) => {
+        captured.push({
+          promptLen: input.prompt.length,
+          contextLen: (input.contextText ?? '').length,
+          mime: input.responseMimeType,
+          hasSchema: Boolean(input.responseSchema),
+        });
+        return {
+          text: JSON.stringify({
+            suppliedFactsUsed: ['Austin Founder', 'Establish Clinician Authority'],
+            missingContextNotes: [],
+            researchCaveat: 'AI content objectives require owner review.',
+            aiSuggestions: { note: 'Focus on plain-language clinician clarity.' },
+            objectives: [
+              {
+                title: 'Establish Plain-Language Biomarker Credibility',
+                level: 'primary',
+                description: 'Make preventive biomarkers clear for Austin founders.',
+                targetAudienceOutcomes: ['Understand early ApoB signals'],
+                desiredAudienceActions: ['Subscribe to weekly MD briefing'],
+                alignedMarketingGoalTitle: 'Grow Consultation Pipeline',
+                alignedMarketingObjectiveTitle: 'Establish Clinician Authority',
+              },
+              {
+                title: 'Convert Informed Readers Into Consultation Inquiries',
+                level: 'supporting',
+                description: 'Bridge educational teardowns to discovery bookings.',
+                targetAudienceOutcomes: ['Know when clinician care adds value'],
+                desiredAudienceActions: ['Book preventive discovery call'],
+                alignedMarketingGoalTitle: 'Grow Consultation Pipeline',
+                alignedMarketingObjectiveTitle: 'Establish Clinician Authority',
+              },
+            ],
+          }),
+          model: DEFAULT_GEMINI_MODEL,
+          generatedAt: '2026-11-20T00:00:00.000Z',
+        };
+      },
+    },
+  );
+});
+
+test('Phase 2B Content Calendar API routes enforce owner auth, UUID validation, CRUD/batch persistence, and strict cross-brand isolation', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'brandflow-cal-api-'));
+  try {
+    const ownerRepo = new LocalJsonStorageRepository(OWNER_ID, 'owner@example.com', tempDir);
+    const brandA = await ownerRepo.createBrand({
+      brandName: 'Brand Alpha Calendar',
+      businessDescription: 'Strategic brand consultancy for B2B service founders.',
+      industry: 'Consulting',
+      productsOrServices: 'Brand Sprints',
+      targetMarket: 'B2B Founders',
+      primaryLocation: 'Lagos & Remote',
+    });
+    const brandB = await ownerRepo.createBrand({
+      brandName: 'Brand Beta Calendar',
+      businessDescription: 'Independent specialty coffee roastery and subscription.',
+      industry: 'Food & Beverage',
+      productsOrServices: 'Single-origin subscriptions',
+      targetMarket: 'Coffee enthusiasts',
+      primaryLocation: 'London, UK',
+    });
+
+    await withTestServer(
+      async (baseUrl) => {
+        const ownerHeaders = {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer owner-token',
+        };
+
+        // 1. Auth enforcement (401 unauth, 403 non-owner)
+        const unauthRes = await fetch(`${baseUrl}/api/brands/${brandA.id}/calendars`);
+        assert.equal(unauthRes.status, 401);
+
+        const nonOwnerRes = await fetch(`${baseUrl}/api/brands/${brandA.id}/calendars`, {
+          headers: { Authorization: 'Bearer other-token' },
+        });
+        assert.equal(nonOwnerRes.status, 403);
+
+        // 2. Invalid UUID rejected with 400
+        const badUuidRes = await fetch(`${baseUrl}/api/brands/not-a-uuid/calendars`, {
+          headers: ownerHeaders,
+        });
+        assert.equal(badUuidRes.status, 400);
+
+        // 3. Create calendar for Brand A
+        const createRes = await fetch(`${baseUrl}/api/brands/${brandA.id}/calendars`, {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({
+            name: 'Dec 2026 30-Day Calendar',
+            startDate: '2026-12-01',
+            endDate: '2026-12-30',
+            durationDays: 30,
+            status: 'generating',
+            settings: {
+              startDate: '2026-12-01',
+              durationDays: 30,
+              selectedPlatforms: ['LinkedIn', 'Email Newsletter'],
+              postsPerWeek: 4,
+              postingFrequencyLabel: '4 posts/week',
+              preferredPostingDays: ['Monday', 'Tuesday', 'Thursday', 'Friday'],
+              preferredPostingTime: '09:00 AM',
+            },
+          }),
+        });
+        assert.equal(createRes.status, 201);
+        const createdCal = ((await createRes.json()) as { calendar: { id: string; brandId: string } })
+          .calendar;
+        assert.equal(createdCal.brandId, brandA.id);
+
+        // 4. Batch upsert items into Week 1
+        const batchRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/calendars/${createdCal.id}/items/batch`,
+          {
+            method: 'POST',
+            headers: ownerHeaders,
+            body: JSON.stringify({
+              replaceBatchIndex: 0,
+              items: [
+                {
+                  scheduledDate: '2026-12-02',
+                  platform: 'LinkedIn',
+                  title: 'Week 1 Positioning Breakdown',
+                  contentPillar: 'Positioning Clarity',
+                  contentFormat: 'Carousel Breakdown',
+                  coreMessage: 'Clarify market position before scaling content.',
+                  batchIndex: 0,
+                  source: 'ai_generated',
+                },
+              ],
+            }),
+          },
+        );
+        assert.equal(batchRes.status, 201);
+        const batchBody = (await batchRes.json()) as { items: Array<{ id: string }> };
+        assert.equal(batchBody.items.length, 1);
+
+        // 5. Add manual item, edit/reschedule it, and verify GET calendar returns both items
+        const addManualRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/calendars/${createdCal.id}/items`,
+          {
+            method: 'POST',
+            headers: ownerHeaders,
+            body: JSON.stringify({
+              scheduledDate: '2026-12-05',
+              platform: 'Email Newsletter',
+              title: 'Founder Q&A Dispatch',
+              contentPillar: 'Content Systems',
+              contentFormat: 'Founder Essay',
+              coreMessage: 'Answer top client positioning question.',
+              source: 'manual',
+            }),
+          },
+        );
+        assert.equal(addManualRes.status, 201);
+        const manualItem = ((await addManualRes.json()) as { item: { id: string } }).item;
+
+        const patchItemRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/calendars/${createdCal.id}/items/${manualItem.id}`,
+          {
+            method: 'PATCH',
+            headers: ownerHeaders,
+            body: JSON.stringify({ scheduledDate: '2026-12-06', workflowStatus: 'approved' }),
+          },
+        );
+        assert.equal(patchItemRes.status, 200);
+        const patchedItem = (
+          (await patchItemRes.json()) as { item: { scheduledDate: string; workflowStatus: string } }
+        ).item;
+        assert.equal(patchedItem.scheduledDate, '2026-12-06');
+        assert.equal(patchedItem.workflowStatus, 'approved');
+
+        // 6. Strict cross-brand isolation: Brand B cannot read, patch, or delete Brand A's calendar or items
+        const crossGetCal = await fetch(
+          `${baseUrl}/api/brands/${brandB.id}/calendars/${createdCal.id}`,
+          { headers: ownerHeaders },
+        );
+        assert.equal(crossGetCal.status, 404);
+
+        const crossPatchItem = await fetch(
+          `${baseUrl}/api/brands/${brandB.id}/calendars/${createdCal.id}/items/${manualItem.id}`,
+          {
+            method: 'PATCH',
+            headers: ownerHeaders,
+            body: JSON.stringify({ title: 'Cross-brand tamper attempt' }),
+          },
+        );
+        assert.equal(crossPatchItem.status, 404);
+
+        const crossDeleteCal = await fetch(
+          `${baseUrl}/api/brands/${brandB.id}/calendars/${createdCal.id}`,
+          { method: 'DELETE', headers: ownerHeaders },
+        );
+        assert.equal(crossDeleteCal.status, 404);
+
+        // 7. Brand A reads full calendar, updates status, deletes item, deletes calendar cleanly
+        const getFullRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/calendars/${createdCal.id}`,
+          { headers: ownerHeaders },
+        );
+        assert.equal(getFullRes.status, 200);
+        const fullBody = (await getFullRes.json()) as { calendar: { items: unknown[] } };
+        assert.equal(fullBody.calendar.items.length, 2);
+
+        const delItemRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/calendars/${createdCal.id}/items/${manualItem.id}`,
+          { method: 'DELETE', headers: ownerHeaders },
+        );
+        assert.equal(delItemRes.status, 200);
+
+        const delCalRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/calendars/${createdCal.id}`,
+          { method: 'DELETE', headers: ownerHeaders },
+        );
+        assert.equal(delCalRes.status, 200);
+      },
+      {
+        storageFactory: (userId, _accessToken, userEmail) =>
+          new LocalJsonStorageRepository(userId, userEmail, tempDir),
+      },
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('POST /api/brands/:id/prompts/execute returns requestId and explicit errorCategory on provider failures', async () => {
+  await withTestServer(
+    async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/api/brands/${OWNED_BRAND_ID}/prompts/execute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer owner-token',
+        },
+        body: JSON.stringify({ promptId: 'brand_foundation_synthesis' }),
+      });
+      assert.equal(res.status, 503);
+      const body = (await res.json()) as {
+        error: string;
+        errorCategory?: string;
+        requestId?: string;
+      };
+      assert.match(body.error, /temporarily busy/i);
+      assert.equal(body.errorCategory, 'provider_unavailable');
+      assert.ok(body.requestId && body.requestId.length > 0);
+    },
+    {
+      generateAiContent: async () => {
+        throw new GeminiProviderError(
+          'AI service is temporarily busy. Please try again in a moment.',
+          503,
+          'provider_unavailable',
+        );
+      },
+    },
+  );
+});
+
+
 
 
