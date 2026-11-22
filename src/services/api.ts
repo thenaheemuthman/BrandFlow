@@ -6,12 +6,17 @@ import type {
   Brand,
   BrandFormInput,
   BrandStrategyModule,
+  ContentAsset,
+  ContentAssetWithVersions,
   ContentCalendar,
   ContentCalendarItem,
   ContentCalendarWithItems,
+  CreateContentAssetInput,
+  CreateContentAssetVersionInput,
   CreateContentCalendarInput,
   CreateContentCalendarItemInput,
   StrategyModuleKey,
+  UpdateContentAssetInput,
   UpdateContentCalendarInput,
   UpdateContentCalendarItemInput,
   UpsertBrandModuleInput,
@@ -245,6 +250,74 @@ export const api = {
   ): Promise<{ deleted: boolean }> {
     return requestJson<{ deleted: boolean }>(
       `/api/brands/${encodeURIComponent(brandId)}/calendars/${encodeURIComponent(calendarId)}/items/${encodeURIComponent(itemId)}`,
+      {
+        method: 'DELETE',
+      },
+    );
+  },
+
+  listContentAssets(brandId: string): Promise<{ assets: ContentAsset[] }> {
+    return requestJson<{ assets: ContentAsset[] }>(
+      `/api/brands/${encodeURIComponent(brandId)}/content-assets`,
+    );
+  },
+
+  getContentAsset(
+    brandId: string,
+    assetId: string,
+  ): Promise<{ asset: ContentAssetWithVersions }> {
+    return requestJson<{ asset: ContentAssetWithVersions }>(
+      `/api/brands/${encodeURIComponent(brandId)}/content-assets/${encodeURIComponent(assetId)}`,
+    );
+  },
+
+  createContentAsset(
+    brandId: string,
+    input: CreateContentAssetInput,
+  ): Promise<{ asset: ContentAssetWithVersions }> {
+    return requestJson<{ asset: ContentAssetWithVersions }>(
+      `/api/brands/${encodeURIComponent(brandId)}/content-assets`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
+    );
+  },
+
+  updateContentAsset(
+    brandId: string,
+    assetId: string,
+    patch: UpdateContentAssetInput,
+  ): Promise<{ asset: ContentAssetWithVersions }> {
+    return requestJson<{ asset: ContentAssetWithVersions }>(
+      `/api/brands/${encodeURIComponent(brandId)}/content-assets/${encodeURIComponent(assetId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      },
+    );
+  },
+
+  createContentAssetVersion(
+    brandId: string,
+    assetId: string,
+    input: CreateContentAssetVersionInput,
+  ): Promise<{ asset: ContentAssetWithVersions }> {
+    return requestJson<{ asset: ContentAssetWithVersions }>(
+      `/api/brands/${encodeURIComponent(brandId)}/content-assets/${encodeURIComponent(assetId)}/versions`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+      },
+    );
+  },
+
+  deleteContentAsset(
+    brandId: string,
+    assetId: string,
+  ): Promise<{ deleted: boolean }> {
+    return requestJson<{ deleted: boolean }>(
+      `/api/brands/${encodeURIComponent(brandId)}/content-assets/${encodeURIComponent(assetId)}`,
       {
         method: 'DELETE',
       },

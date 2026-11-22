@@ -714,10 +714,18 @@ test('POST /api/ai/generate returns sanitised provider errors and never exposes 
         body: JSON.stringify({ prompt: 'Rate limited', model: DEFAULT_GEMINI_MODEL }),
       });
       assert.equal(res.status, 429);
+      assert.equal(res.headers.get('retry-after'), '30');
+      const body = (await res.json()) as {
+        error?: string;
+        errorCategory?: string;
+        retryAfterSeconds?: number;
+      };
+      assert.equal(body.errorCategory, 'rate_limited');
+      assert.equal(body.retryAfterSeconds, 30);
     },
     {
       generateAiContent: async () => {
-        throw new GeminiProviderError('Rate limited', 429);
+        throw new GeminiProviderError('Rate limited', 429, 'rate_limited', 30);
       },
     },
   );
@@ -2160,6 +2168,351 @@ test('POST /api/brands/:id/prompts/execute returns requestId and explicit errorC
   );
 });
 
+test('Phase 2B Content Studio API routes enforce owner auth, UUID validation, anti-spoofing, cross-brand isolation, version snapshots, and mocked Gemini generate/refine execution', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'brandflow-studio-api-'));
+  let aiCalls = 0;
 
+  try {
+    await withTestServer(
+      async (baseUrl) => {
+        const ownerHeaders = {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer owner-token',
+        };
 
+        // 1. Create Brand A and Brand B via API
+        const brandARes = await fetch(`${baseUrl}/api/brands`, {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({
+            brandName: 'Naheem Advisory',
+            businessDescription: 'B2B brand strategy and content operations consulting for founders.',
+            industry: 'Consulting',
+            productsOrServices: 'Brand Strategy Sprints',
+            targetMarket: 'B2B Service Founders',
+            primaryLocation: 'Lagos & Remote',
+          }),
+        });
+        assert.equal(brandARes.status, 201);
+        const brandA = ((await brandARes.json()) as { brand: { id: string } }).brand;
 
+        const brandBRes = await fetch(`${baseUrl}/api/brands`, {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({
+            brandName: 'Other Isolated Brand',
+            businessDescription: 'Separate retail consumer brand workspace isolated from Brand A.',
+            industry: 'Retail',
+            productsOrServices: 'Consumer goods',
+            targetMarket: 'Retail buyers',
+            primaryLocation: 'London, UK',
+          }),
+        });
+        assert.equal(brandBRes.status, 201);
+        const brandB = ((await brandBRes.json()) as { brand: { id: string } }).brand;
+
+        // 2. Unauthenticated & invalid UUID rejected
+        const unauthRes = await fetch(`${baseUrl}/api/brands/${brandA.id}/content-assets`);
+        assert.equal(unauthRes.status, 401);
+
+        const badUuidRes = await fetch(`${baseUrl}/api/brands/${brandA.id}/content-assets/not-a-uuid`, {
+          headers: ownerHeaders,
+        });
+        assert.equal(badUuidRes.status, 400);
+
+        // 3. Spoofed body brandId rejected with 400
+        const spoofedRes = await fetch(`${baseUrl}/api/brands/${brandA.id}/content-assets`, {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({
+            brandId: brandB.id,
+            title: 'Spoofed Asset',
+            platform: 'LinkedIn',
+            formatCategory: 'social_post',
+            body: { hook: 'Hook', mainCopy: 'Body' },
+          }),
+        });
+        assert.equal(spoofedRes.status, 400);
+
+        // 4. Create content asset on Brand A
+        const createRes = await fetch(`${baseUrl}/api/brands/${brandA.id}/content-assets`, {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({
+            title: 'B2B Positioning Carousel',
+            platform: 'LinkedIn',
+            formatCategory: 'carousel',
+            formatLabel: 'LinkedIn Carousel',
+            contentPillar: 'Positioning',
+            workflowStatus: 'draft',
+            source: 'ai_generated',
+            body: {
+              hook: 'Most B2B firms have a positioning problem, not a posting problem.',
+              alternativeHooks: ['Fix positioning before increasing cadence.'],
+              mainCopy: 'Use this diagnostic before planning Q1 content.',
+              cta: 'Comment AUDIT for the scorecard.',
+              hashtags: ['#B2BStrategy'],
+              visualDirection: 'Clean editorial deck',
+              carouselSlides: [
+                { slideNumber: 1, headline: 'Cover', body: 'Start with positioning.', visualCue: 'Minimalist cover' },
+              ],
+              videoScript: null,
+              articleSections: [],
+              adaptationNotes: '',
+              suppliedFactsUsed: ['Brand Name: Naheem Advisory'],
+              missingContextNotes: [],
+              researchCaveat: 'AI draft pending human approval.',
+            },
+            changeSummary: 'Initial draft',
+            actionType: 'ai_generate',
+          }),
+        });
+        assert.equal(createRes.status, 201);
+        const createdAsset = (
+          (await createRes.json()) as {
+            asset: {
+              id: string;
+              currentVersionNumber: number;
+              workflowStatus: string;
+              versions: Array<{ versionNumber: number }>;
+            };
+          }
+        ).asset;
+        assert.equal(createdAsset.currentVersionNumber, 1);
+        assert.equal(createdAsset.workflowStatus, 'draft');
+        assert.equal(createdAsset.versions.length, 1);
+
+        // 5. List and get enforce strict brand isolation
+        const listA = await fetch(`${baseUrl}/api/brands/${brandA.id}/content-assets`, {
+          headers: ownerHeaders,
+        });
+        assert.equal(listA.status, 200);
+        assert.equal(((await listA.json()) as { assets: unknown[] }).assets.length, 1);
+
+        const listB = await fetch(`${baseUrl}/api/brands/${brandB.id}/content-assets`, {
+          headers: ownerHeaders,
+        });
+        assert.equal(listB.status, 200);
+        assert.equal(((await listB.json()) as { assets: unknown[] }).assets.length, 0);
+
+        const crossGet = await fetch(
+          `${baseUrl}/api/brands/${brandB.id}/content-assets/${createdAsset.id}`,
+          { headers: ownerHeaders },
+        );
+        assert.equal(crossGet.status, 404);
+
+        // 6. Approve via PATCH, then edit body -> preserves approved snapshot and moves to in_progress
+        const approveRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/content-assets/${createdAsset.id}`,
+          {
+            method: 'PATCH',
+            headers: ownerHeaders,
+            body: JSON.stringify({ workflowStatus: 'approved' }),
+          },
+        );
+        assert.equal(approveRes.status, 200);
+        const approvedBody = (await approveRes.json()) as {
+          asset: { workflowStatus: string; approvedAt: string | null };
+        };
+        assert.equal(approvedBody.asset.workflowStatus, 'approved');
+        assert.ok(approvedBody.asset.approvedAt);
+
+        const editAfterApproveRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/content-assets/${createdAsset.id}`,
+          {
+            method: 'PATCH',
+            headers: ownerHeaders,
+            body: JSON.stringify({
+              body: {
+                hook: 'Updated hook after approval',
+                alternativeHooks: [],
+                mainCopy: 'Updated body copy',
+                cta: 'Comment AUDIT',
+                hashtags: ['#B2BStrategy'],
+                visualDirection: 'Clean slides',
+                carouselSlides: [],
+                videoScript: null,
+                articleSections: [],
+                adaptationNotes: '',
+                suppliedFactsUsed: [],
+                missingContextNotes: [],
+                researchCaveat: '',
+              },
+              changeSummary: 'Post-approval revision',
+            }),
+          },
+        );
+        assert.equal(editAfterApproveRes.status, 200);
+        const editedAsset = (
+          (await editAfterApproveRes.json()) as {
+            asset: { workflowStatus: string; currentVersionNumber: number; versions: unknown[] };
+          }
+        ).asset;
+        assert.equal(editedAsset.workflowStatus, 'in_progress');
+        assert.ok(editedAsset.currentVersionNumber >= 2);
+
+        // 7. POST explicit version snapshot
+        const versionRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/content-assets/${createdAsset.id}/versions`,
+          {
+            method: 'POST',
+            headers: ownerHeaders,
+            body: JSON.stringify({
+              title: 'B2B Positioning Carousel (Refined)',
+              platform: 'LinkedIn',
+              formatCategory: 'carousel',
+              body: {
+                hook: 'Refined hook snapshot',
+                alternativeHooks: [],
+                mainCopy: 'Refined body snapshot',
+                cta: 'Comment AUDIT',
+                hashtags: ['#B2BStrategy'],
+                visualDirection: '',
+                carouselSlides: [],
+                videoScript: null,
+                articleSections: [],
+                adaptationNotes: '',
+                suppliedFactsUsed: [],
+                missingContextNotes: [],
+                researchCaveat: '',
+              },
+              source: 'edited_ai',
+              changeSummary: 'AI clarity pass',
+              actionType: 'ai_refine',
+            }),
+          },
+        );
+        assert.equal(versionRes.status, 201);
+        const versionBody = (await versionRes.json()) as {
+          asset: { currentVersionNumber: number };
+        };
+        assert.equal(versionBody.asset.currentVersionNumber, editedAsset.currentVersionNumber + 1);
+
+        // 8. Execute both Content Studio prompts through /api/brands/:id/prompts/execute (mocked Gemini)
+        const studioGenOptions = {
+          platform: 'LinkedIn',
+          formatCategory: 'social_post',
+          formatLabel: 'Social Media Caption / Post',
+          toneOfVoice: 'Direct, analytical',
+          contentLength: 'medium',
+          primaryObjective: 'Build positioning authority',
+          targetAudience: 'B2B Service Founders',
+          ctaPreference: 'Book a discovery call',
+          platformGuidance: 'Lead with 1-2 line hook.',
+          additionalInstructions: 'Keep concise.',
+        };
+        const genPromptRes = await fetch(`${baseUrl}/api/brands/${brandA.id}/prompts/execute`, {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({
+            promptId: 'content_studio_generate_asset',
+            includeApprovedModules: true,
+            variables: {
+              studioGenerationOptions: studioGenOptions,
+              studioCalendarBrief: { mode: 'standalone', platform: 'LinkedIn' },
+            },
+          }),
+        });
+        assert.equal(genPromptRes.status, 200);
+        const genPromptJson = (await genPromptRes.json()) as {
+          status: string;
+          targetModule: string;
+          output: { asset: { title: string } };
+        };
+        assert.equal(genPromptJson.status, 'success');
+        assert.equal(genPromptJson.targetModule, 'contentStudio');
+        assert.equal(genPromptJson.output.asset.title, 'Positioning Before Volume');
+
+        const refinePromptRes = await fetch(`${baseUrl}/api/brands/${brandA.id}/prompts/execute`, {
+          method: 'POST',
+          headers: ownerHeaders,
+          body: JSON.stringify({
+            promptId: 'content_studio_refine_asset',
+            includeApprovedModules: true,
+            variables: {
+              refinementAction: 'shorten',
+              targetPlatform: 'LinkedIn',
+              targetTone: 'Direct',
+              refinementInstructions: 'Shorten by 30%.',
+              selectedSectionText: 'Not provided',
+              studioGenerationOptions: studioGenOptions,
+              studioCalendarBrief: { mode: 'standalone', platform: 'LinkedIn' },
+              existingDraft: { title: 'Positioning Before Volume', mainCopy: 'Draft body' },
+            },
+          }),
+        });
+        assert.equal(refinePromptRes.status, 200);
+        assert.equal(aiCalls, 2);
+
+        // 9. Delete asset and verify 404 thereafter
+        const delRes = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/content-assets/${createdAsset.id}`,
+          { method: 'DELETE', headers: ownerHeaders },
+        );
+        assert.equal(delRes.status, 200);
+
+        const afterDelGet = await fetch(
+          `${baseUrl}/api/brands/${brandA.id}/content-assets/${createdAsset.id}`,
+          { headers: ownerHeaders },
+        );
+        assert.equal(afterDelGet.status, 404);
+      },
+      {
+        storageFactory: (userId, _accessToken, userEmail) =>
+          new LocalJsonStorageRepository(userId, userEmail, tempDir),
+        generateAiContent: async (input) => {
+          aiCalls += 1;
+          assert.equal(input.responseMimeType, 'application/json');
+          assert.ok(input.responseSchema);
+          assert.ok(input.prompt.length < MAX_PROMPT_LENGTH);
+          const isRefine = input.prompt.includes('Refinement Action');
+          return {
+            text: JSON.stringify(
+              isRefine
+                ? {
+                    suppliedFactsUsed: ['Brand Name: Naheem Advisory'],
+                    missingContextNotes: [],
+                    researchCaveat: 'AI-refined draft pending review.',
+                    aiSuggestions: {
+                      changeSummary: 'Shortened copy by 30%.',
+                      editorialNotes: ['Preserved CTA.'],
+                    },
+                    asset: {
+                      title: 'Positioning Before Volume',
+                      hook: 'Clarity beats volume.',
+                      alternativeHooks: ['Fix your message first.'],
+                      mainCopy: 'Tightened draft body.',
+                      cta: 'Book a discovery call.',
+                      hashtags: ['#B2B'],
+                      visualDirection: 'Minimalist graphic',
+                    },
+                  }
+                : {
+                    suppliedFactsUsed: ['Brand Name: Naheem Advisory'],
+                    missingContextNotes: [],
+                    researchCaveat: 'AI draft pending human approval.',
+                    aiSuggestions: {
+                      creativeRationale: 'Focuses on buyer clarity.',
+                      platformBestPracticesApplied: ['Short opening lines'],
+                    },
+                    asset: {
+                      title: 'Positioning Before Volume',
+                      hook: 'Most founders post more when they need sharper positioning.',
+                      alternativeHooks: ['Volume cannot fix vague positioning.'],
+                      mainCopy: 'Clarify who you serve and what bottleneck you solve before scaling cadence.',
+                      cta: 'Book a discovery call.',
+                      hashtags: ['#B2BStrategy'],
+                      visualDirection: 'Clean text layout',
+                    },
+                  },
+            ),
+            model: DEFAULT_GEMINI_MODEL,
+            generatedAt: '2026-11-21T12:00:00.000Z',
+          };
+        },
+      },
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});

@@ -11,10 +11,22 @@ import type {
   BrandStrategyModule,
   CalendarItemSource,
   CalendarWorkflowStatus,
+  ContentAsset,
+  ContentAssetBody,
+  ContentAssetFormatCategory,
+  ContentAssetSource,
+  ContentAssetStatus,
+  ContentAssetVersion,
+  ContentAssetWithVersions,
   ContentCalendar,
   ContentCalendarItem,
   ContentCalendarStatus,
   ContentCalendarWithItems,
+  ContentLengthPreference,
+  ContentStudioGenerationOptions,
+  ContentStudioHandoffPayload,
+  CreateContentAssetInput,
+  CreateContentAssetVersionInput,
   CreateContentCalendarInput,
   CreateContentCalendarItemInput,
   ModuleStatus,
@@ -22,6 +34,7 @@ import type {
   StorageStatus,
   StrategyModuleContent,
   StrategyModuleKey,
+  UpdateContentAssetInput,
   UpdateContentCalendarInput,
   UpdateContentCalendarItemInput,
   UpsertBrandModuleInput,
@@ -114,6 +127,182 @@ export class CalendarValidationError extends Error {
     super(message);
     this.name = 'CalendarValidationError';
   }
+}
+
+export class ContentAssetValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ContentAssetValidationError';
+  }
+}
+
+export const CONTENT_ASSET_STATUSES: readonly ContentAssetStatus[] = [
+  'draft',
+  'in_progress',
+  'ready_for_review',
+  'approved',
+  'published',
+  'archived',
+];
+
+export const CONTENT_ASSET_FORMAT_CATEGORIES: readonly ContentAssetFormatCategory[] = [
+  'social_post',
+  'educational_post',
+  'promotional_post',
+  'story_post',
+  'short_video_script',
+  'carousel',
+  'long_form_article',
+  'platform_adaptation',
+];
+
+export const CONTENT_ASSET_SOURCES: readonly ContentAssetSource[] = [
+  'ai_generated',
+  'edited_ai',
+  'manual',
+];
+
+export const CONTENT_LENGTH_PREFERENCES: readonly ContentLengthPreference[] = [
+  'short',
+  'medium',
+  'long',
+];
+
+export function isValidContentAssetStatus(value: string): value is ContentAssetStatus {
+  return CONTENT_ASSET_STATUSES.includes(value as ContentAssetStatus);
+}
+
+export function isValidContentAssetFormatCategory(
+  value: string,
+): value is ContentAssetFormatCategory {
+  return CONTENT_ASSET_FORMAT_CATEGORIES.includes(value as ContentAssetFormatCategory);
+}
+
+export function isValidContentAssetSource(value: string): value is ContentAssetSource {
+  return CONTENT_ASSET_SOURCES.includes(value as ContentAssetSource);
+}
+
+export function isValidContentLengthPreference(
+  value: string,
+): value is ContentLengthPreference {
+  return CONTENT_LENGTH_PREFERENCES.includes(value as ContentLengthPreference);
+}
+
+function sanitizeAssetBody(raw: unknown): ContentAssetBody {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new ContentAssetValidationError('body must be a valid JSON object.');
+  }
+  const obj = raw as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const strArr = (v: unknown) =>
+    Array.isArray(v)
+      ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
+      : [];
+
+  const carouselSlides = Array.isArray(obj.carouselSlides)
+    ? obj.carouselSlides
+        .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null && !Array.isArray(s))
+        .map((s, idx) => ({
+          slideNumber:
+            typeof s.slideNumber === 'number' && Number.isFinite(s.slideNumber) && s.slideNumber > 0
+              ? Math.round(s.slideNumber)
+              : idx + 1,
+          headline: str(s.headline),
+          body: str(s.body),
+          visualCue: str(s.visualCue),
+        }))
+    : [];
+
+  let videoScript: ContentAssetBody['videoScript'] = null;
+  if (typeof obj.videoScript === 'object' && obj.videoScript !== null && !Array.isArray(obj.videoScript)) {
+    const vs = obj.videoScript as Record<string, unknown>;
+    const scenes = Array.isArray(vs.scenes)
+      ? vs.scenes
+          .filter((sc): sc is Record<string, unknown> => typeof sc === 'object' && sc !== null && !Array.isArray(sc))
+          .map((sc, idx) => ({
+            sceneNumber:
+              typeof sc.sceneNumber === 'number' && Number.isFinite(sc.sceneNumber) && sc.sceneNumber > 0
+                ? Math.round(sc.sceneNumber)
+                : idx + 1,
+            visual: str(sc.visual),
+            dialogue: str(sc.dialogue),
+            durationHint: str(sc.durationHint),
+          }))
+      : [];
+    videoScript = {
+      hook: str(vs.hook),
+      scenes,
+      cta: str(vs.cta),
+    };
+  }
+
+  const articleSections = Array.isArray(obj.articleSections)
+    ? obj.articleSections
+        .filter((sec): sec is Record<string, unknown> => typeof sec === 'object' && sec !== null && !Array.isArray(sec))
+        .map((sec) => ({
+          heading: str(sec.heading),
+          body: str(sec.body),
+        }))
+    : [];
+
+  return {
+    hook: str(obj.hook),
+    alternativeHooks: strArr(obj.alternativeHooks),
+    mainCopy: str(obj.mainCopy),
+    cta: str(obj.cta),
+    hashtags: strArr(obj.hashtags),
+    visualDirection: str(obj.visualDirection),
+    carouselSlides,
+    videoScript,
+    articleSections,
+    adaptationNotes: str(obj.adaptationNotes),
+    suppliedFactsUsed: strArr(obj.suppliedFactsUsed),
+    missingContextNotes: strArr(obj.missingContextNotes),
+    researchCaveat: str(obj.researchCaveat),
+  };
+}
+
+function defaultGenerationOptions(
+  platform: string,
+  formatCategory: ContentAssetFormatCategory,
+  formatLabel: string,
+  toneOfVoice: string,
+  contentLength: ContentLengthPreference,
+  contentObjective: string,
+  targetAudience: string,
+): ContentStudioGenerationOptions {
+  return {
+    platform,
+    formatCategory,
+    formatLabel,
+    toneOfVoice,
+    contentLength,
+    primaryObjective: contentObjective,
+    targetAudience,
+    ctaPreference: '',
+    additionalInstructions: '',
+  };
+}
+
+function deriveContentStudioMetrics(
+  assets: readonly Pick<ContentAsset, 'workflowStatus'>[],
+): {
+  moduleStatus: ModuleStatus;
+  contentPiecesCount: number;
+  pendingApprovalsCount: number;
+} {
+  const nonArchived = assets.filter((a) => a.workflowStatus !== 'archived');
+  const contentPiecesCount = nonArchived.length;
+  const pendingApprovalsCount = nonArchived.filter(
+    (a) => a.workflowStatus === 'ready_for_review',
+  ).length;
+  let moduleStatus: ModuleStatus = 'not_started';
+  if (assets.some((a) => a.workflowStatus === 'approved' || a.workflowStatus === 'published')) {
+    moduleStatus = 'completed';
+  } else if (assets.length > 0) {
+    moduleStatus = 'in_progress';
+  }
+  return { moduleStatus, contentPiecesCount, pendingApprovalsCount };
 }
 
 export const CONTENT_CALENDAR_STATUSES: readonly ContentCalendarStatus[] = [
@@ -352,6 +541,20 @@ export interface StorageRepository {
     calendarId: string,
     itemId: string,
   ): Promise<boolean>;
+  listContentAssets(brandId: string): Promise<ContentAsset[]>;
+  getContentAsset(brandId: string, assetId: string): Promise<ContentAssetWithVersions | null>;
+  createContentAsset(brandId: string, input: CreateContentAssetInput): Promise<ContentAssetWithVersions>;
+  updateContentAsset(
+    brandId: string,
+    assetId: string,
+    patch: UpdateContentAssetInput,
+  ): Promise<ContentAssetWithVersions | null>;
+  createContentAssetVersion(
+    brandId: string,
+    assetId: string,
+    input: CreateContentAssetVersionInput,
+  ): Promise<ContentAssetWithVersions | null>;
+  deleteContentAsset(brandId: string, assetId: string): Promise<boolean>;
   listActivities(brandId?: string): Promise<ActivityEvent[]>;
   getProfile(): Promise<UserProfile>;
   updateProfile(patch: Partial<UserProfile>): Promise<UserProfile>;
@@ -364,6 +567,8 @@ interface LocalDatabaseFile {
   brandModules: BrandStrategyModule[];
   contentCalendars: ContentCalendar[];
   contentCalendarItems: ContentCalendarItem[];
+  contentAssets: ContentAsset[];
+  contentAssetVersions: ContentAssetVersion[];
 }
 
 export class LocalJsonStorageRepository implements StorageRepository {
@@ -396,6 +601,8 @@ export class LocalJsonStorageRepository implements StorageRepository {
         brandModules: Array.isArray(parsed.brandModules) ? parsed.brandModules : [],
         contentCalendars: Array.isArray(parsed.contentCalendars) ? parsed.contentCalendars : [],
         contentCalendarItems: Array.isArray(parsed.contentCalendarItems) ? parsed.contentCalendarItems : [],
+        contentAssets: Array.isArray(parsed.contentAssets) ? parsed.contentAssets : [],
+        contentAssetVersions: Array.isArray(parsed.contentAssetVersions) ? parsed.contentAssetVersions : [],
       };
     } catch {
       const initial: LocalDatabaseFile = {
@@ -405,6 +612,8 @@ export class LocalJsonStorageRepository implements StorageRepository {
         brandModules: [],
         contentCalendars: [],
         contentCalendarItems: [],
+        contentAssets: [],
+        contentAssetVersions: [],
       };
       await this.writeDb(initial);
       return initial;
@@ -588,6 +797,8 @@ export class LocalJsonStorageRepository implements StorageRepository {
       db.brandModules = db.brandModules.filter((m) => m.brandId !== id);
       db.contentCalendars = db.contentCalendars.filter((c) => c.brandId !== id);
       db.contentCalendarItems = db.contentCalendarItems.filter((item) => item.brandId !== id);
+      db.contentAssets = db.contentAssets.filter((a) => a.brandId !== id);
+      db.contentAssetVersions = db.contentAssetVersions.filter((v) => v.brandId !== id);
       db.activities.unshift(
         this.buildActivity(
           null,
@@ -1179,6 +1390,468 @@ export class LocalJsonStorageRepository implements StorageRepository {
       );
       if (idx === -1) return false;
       db.contentCalendarItems.splice(idx, 1);
+      await this.writeDb(db);
+      return true;
+    });
+  }
+
+  private syncLocalContentStudioMetrics(db: LocalDatabaseFile, brandId: string, now: string) {
+    const brandIdx = db.brands.findIndex((b) => b.id === brandId && b.userId === this.userId);
+    if (brandIdx === -1) return;
+    const brandAssets = db.contentAssets.filter(
+      (a) => a.brandId === brandId && a.userId === this.userId,
+    );
+    const { moduleStatus, contentPiecesCount, pendingApprovalsCount } =
+      deriveContentStudioMetrics(brandAssets);
+    const existingBrand = db.brands[brandIdx];
+    db.brands[brandIdx] = {
+      ...existingBrand,
+      contentPiecesCount,
+      pendingApprovalsCount,
+      moduleStatuses: {
+        ...defaultModuleStatuses(),
+        ...(existingBrand.moduleStatuses ?? defaultModuleStatuses()),
+        contentStudio: moduleStatus,
+      },
+      updatedAt: now,
+    };
+  }
+
+  async listContentAssets(brandId: string): Promise<ContentAsset[]> {
+    const db = await this.readDb();
+    this.requireOwnedBrand(db, brandId);
+    return db.contentAssets
+      .filter((a) => a.brandId === brandId && a.userId === this.userId)
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  }
+
+  async getContentAsset(
+    brandId: string,
+    assetId: string,
+  ): Promise<ContentAssetWithVersions | null> {
+    const db = await this.readDb();
+    this.requireOwnedBrand(db, brandId);
+    const asset = db.contentAssets.find(
+      (a) => a.id === assetId && a.brandId === brandId && a.userId === this.userId,
+    );
+    if (!asset) return null;
+    const versions = db.contentAssetVersions
+      .filter((v) => v.assetId === assetId && v.brandId === brandId && v.userId === this.userId)
+      .sort((a, b) => b.versionNumber - a.versionNumber);
+    return { ...asset, versions };
+  }
+
+  async createContentAsset(
+    brandId: string,
+    input: CreateContentAssetInput,
+  ): Promise<ContentAssetWithVersions> {
+    const title = String(input.title ?? '').trim();
+    if (!title || title.length < 2) {
+      throw new ContentAssetValidationError('Asset title must be at least 2 characters.');
+    }
+    const platform = String(input.platform ?? '').trim();
+    if (!platform) {
+      throw new ContentAssetValidationError('Platform is required.');
+    }
+    const formatCategory: ContentAssetFormatCategory = input.formatCategory ?? 'social_post';
+    if (!isValidContentAssetFormatCategory(formatCategory)) {
+      throw new ContentAssetValidationError(`Invalid formatCategory: ${formatCategory}`);
+    }
+    const workflowStatus: ContentAssetStatus = input.workflowStatus ?? 'draft';
+    if (!isValidContentAssetStatus(workflowStatus)) {
+      throw new ContentAssetValidationError(`Invalid workflowStatus: ${workflowStatus}`);
+    }
+    const source: ContentAssetSource = input.source ?? 'ai_generated';
+    if (!isValidContentAssetSource(source)) {
+      throw new ContentAssetValidationError(`Invalid source: ${source}`);
+    }
+    const contentLength: ContentLengthPreference = input.contentLength ?? 'medium';
+    if (!isValidContentLengthPreference(contentLength)) {
+      throw new ContentAssetValidationError(`Invalid contentLength: ${contentLength}`);
+    }
+    const scheduledDate =
+      input.scheduledDate && String(input.scheduledDate).trim()
+        ? String(input.scheduledDate).trim()
+        : null;
+    if (scheduledDate && !isValidIsoDateString(scheduledDate)) {
+      throw new ContentAssetValidationError('scheduledDate must be a valid YYYY-MM-DD date.');
+    }
+    const body = sanitizeAssetBody(input.body);
+
+    return this.runSerialized(async () => {
+      const db = await this.readDb();
+      const brand = this.requireOwnedBrand(db, brandId);
+
+      const calendarId = input.calendarId ? String(input.calendarId).trim() : null;
+      const calendarItemId = input.calendarItemId ? String(input.calendarItemId).trim() : null;
+
+      if (calendarId) {
+        const cal = db.contentCalendars.find(
+          (c) => c.id === calendarId && c.brandId === brandId && c.userId === this.userId,
+        );
+        if (!cal) {
+          throw new ContentAssetValidationError(
+            'Linked content calendar does not belong to this brand.',
+          );
+        }
+      }
+      if (calendarItemId) {
+        const item = db.contentCalendarItems.find(
+          (ci) => ci.id === calendarItemId && ci.brandId === brandId && ci.userId === this.userId,
+        );
+        if (!item) {
+          throw new ContentAssetValidationError(
+            'Linked content calendar entry does not belong to this brand.',
+          );
+        }
+        if (calendarId && item.calendarId !== calendarId) {
+          throw new ContentAssetValidationError(
+            'Linked calendar entry does not belong to the specified calendar.',
+          );
+        }
+      }
+
+      const now = new Date().toISOString();
+      const formatLabel = String(input.formatLabel ?? '').trim();
+      const toneOfVoice = String(input.toneOfVoice ?? '').trim();
+      const contentObjective = String(input.contentObjective ?? '').trim();
+      const targetAudience = String(input.targetAudience ?? '').trim();
+
+      const asset: ContentAsset = {
+        id: crypto.randomUUID(),
+        userId: this.userId,
+        brandId,
+        calendarId,
+        calendarItemId,
+        title,
+        platform,
+        formatCategory,
+        formatLabel,
+        contentPillar: String(input.contentPillar ?? '').trim(),
+        contentTheme: String(input.contentTheme ?? '').trim(),
+        targetAudience,
+        contentObjective,
+        toneOfVoice,
+        contentLength,
+        scheduledDate,
+        workflowStatus,
+        source,
+        currentVersionNumber: 1,
+        approvedVersionNumber: workflowStatus === 'approved' ? 1 : null,
+        approvedAt: workflowStatus === 'approved' ? now : null,
+        publishedAt: workflowStatus === 'published' ? now : null,
+        body,
+        generationOptions:
+          input.generationOptions ??
+          defaultGenerationOptions(
+            platform,
+            formatCategory,
+            formatLabel,
+            toneOfVoice,
+            contentLength,
+            contentObjective,
+            targetAudience,
+          ),
+        handoffSnapshot: input.handoffSnapshot ?? null,
+        promptId: input.promptId ?? null,
+        promptVersion: input.promptVersion ?? null,
+        model: input.model ?? null,
+        generatedAt: input.generatedAt ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const version: ContentAssetVersion = {
+        id: crypto.randomUUID(),
+        userId: this.userId,
+        brandId,
+        assetId: asset.id,
+        versionNumber: 1,
+        title: asset.title,
+        body: asset.body,
+        changeSummary: String(input.changeSummary ?? 'Initial draft created').trim(),
+        actionType: String(input.actionType ?? 'initial').trim(),
+        source: asset.source,
+        promptId: asset.promptId,
+        promptVersion: asset.promptVersion,
+        model: asset.model,
+        createdAt: now,
+      };
+
+      db.contentAssets.unshift(asset);
+      db.contentAssetVersions.unshift(version);
+      this.syncLocalContentStudioMetrics(db, brandId, now);
+      db.activities.unshift(
+        this.buildActivity(
+          brand.brand.id,
+          brand.brand.brandName,
+          'module_updated',
+          `Created Content Studio asset "${asset.title}" for ${brand.brand.brandName}`,
+        ),
+      );
+      db.activities = db.activities.slice(0, 50);
+      await this.writeDb(db);
+      return { ...asset, versions: [version] };
+    });
+  }
+
+  async updateContentAsset(
+    brandId: string,
+    assetId: string,
+    patch: UpdateContentAssetInput,
+  ): Promise<ContentAssetWithVersions | null> {
+    if (patch.formatCategory !== undefined && !isValidContentAssetFormatCategory(patch.formatCategory)) {
+      throw new ContentAssetValidationError(`Invalid formatCategory: ${patch.formatCategory}`);
+    }
+    if (patch.workflowStatus !== undefined && !isValidContentAssetStatus(patch.workflowStatus)) {
+      throw new ContentAssetValidationError(`Invalid workflowStatus: ${patch.workflowStatus}`);
+    }
+    if (patch.source !== undefined && !isValidContentAssetSource(patch.source)) {
+      throw new ContentAssetValidationError(`Invalid source: ${patch.source}`);
+    }
+    if (patch.contentLength !== undefined && !isValidContentLengthPreference(patch.contentLength)) {
+      throw new ContentAssetValidationError(`Invalid contentLength: ${patch.contentLength}`);
+    }
+    if (
+      patch.scheduledDate !== undefined &&
+      patch.scheduledDate !== null &&
+      patch.scheduledDate !== '' &&
+      !isValidIsoDateString(patch.scheduledDate)
+    ) {
+      throw new ContentAssetValidationError('scheduledDate must be a valid YYYY-MM-DD date.');
+    }
+    const sanitizedBody = patch.body !== undefined ? sanitizeAssetBody(patch.body) : undefined;
+
+    return this.runSerialized(async () => {
+      const db = await this.readDb();
+      const brand = this.requireOwnedBrand(db, brandId);
+      const idx = db.contentAssets.findIndex(
+        (a) => a.id === assetId && a.brandId === brandId && a.userId === this.userId,
+      );
+      if (idx === -1) return null;
+
+      const existing = db.contentAssets[idx];
+      const now = new Date().toISOString();
+
+      const isProtectedStatus =
+        existing.workflowStatus === 'approved' || existing.workflowStatus === 'published';
+      const shouldSnapshotVersion =
+        sanitizedBody !== undefined && (patch.createVersion === true || isProtectedStatus);
+
+      let nextVersionNumber = existing.currentVersionNumber;
+      const nextTitle =
+        patch.title !== undefined ? patch.title.trim() || existing.title : existing.title;
+      const nextBody = sanitizedBody ?? existing.body;
+      const nextSource: ContentAssetSource =
+        patch.source ??
+        (sanitizedBody !== undefined && existing.source === 'ai_generated'
+          ? 'edited_ai'
+          : existing.source);
+
+      if (shouldSnapshotVersion) {
+        const existingVersions = db.contentAssetVersions.filter(
+          (v) => v.assetId === assetId && v.brandId === brandId && v.userId === this.userId,
+        );
+        const maxVer = existingVersions.reduce((acc, v) => Math.max(acc, v.versionNumber), 0);
+        nextVersionNumber = Math.max(existing.currentVersionNumber, maxVer) + 1;
+        const version: ContentAssetVersion = {
+          id: crypto.randomUUID(),
+          userId: this.userId,
+          brandId,
+          assetId,
+          versionNumber: nextVersionNumber,
+          title: nextTitle,
+          body: nextBody,
+          changeSummary: String(
+            patch.changeSummary ??
+              (isProtectedStatus
+                ? 'Edited previously approved asset (preserved approved snapshot)'
+                : 'Saved new draft version'),
+          ).trim(),
+          actionType: String(patch.actionType ?? 'manual_edit').trim(),
+          source: nextSource,
+          promptId: patch.promptId !== undefined ? patch.promptId : existing.promptId,
+          promptVersion:
+            patch.promptVersion !== undefined ? patch.promptVersion : existing.promptVersion,
+          model: patch.model !== undefined ? patch.model : existing.model,
+          createdAt: now,
+        };
+        db.contentAssetVersions.unshift(version);
+      }
+
+      const nextStatus: ContentAssetStatus =
+        patch.workflowStatus ??
+        (sanitizedBody !== undefined && isProtectedStatus ? 'in_progress' : existing.workflowStatus);
+
+      const updated: ContentAsset = {
+        ...existing,
+        title: nextTitle,
+        platform:
+          patch.platform !== undefined
+            ? patch.platform.trim() || existing.platform
+            : existing.platform,
+        formatCategory: patch.formatCategory ?? existing.formatCategory,
+        formatLabel:
+          patch.formatLabel !== undefined ? patch.formatLabel.trim() : existing.formatLabel,
+        contentPillar:
+          patch.contentPillar !== undefined ? patch.contentPillar.trim() : existing.contentPillar,
+        contentTheme:
+          patch.contentTheme !== undefined ? patch.contentTheme.trim() : existing.contentTheme,
+        targetAudience:
+          patch.targetAudience !== undefined
+            ? patch.targetAudience.trim()
+            : existing.targetAudience,
+        contentObjective:
+          patch.contentObjective !== undefined
+            ? patch.contentObjective.trim()
+            : existing.contentObjective,
+        toneOfVoice:
+          patch.toneOfVoice !== undefined ? patch.toneOfVoice.trim() : existing.toneOfVoice,
+        contentLength: patch.contentLength ?? existing.contentLength,
+        scheduledDate:
+          patch.scheduledDate !== undefined
+            ? patch.scheduledDate && patch.scheduledDate.trim()
+              ? patch.scheduledDate.trim()
+              : null
+            : existing.scheduledDate,
+        workflowStatus: nextStatus,
+        source: nextSource,
+        currentVersionNumber: nextVersionNumber,
+        approvedVersionNumber:
+          nextStatus === 'approved'
+            ? nextVersionNumber
+            : existing.approvedVersionNumber,
+        approvedAt:
+          nextStatus === 'approved' && existing.workflowStatus !== 'approved'
+            ? now
+            : existing.approvedAt,
+        publishedAt:
+          nextStatus === 'published' && existing.workflowStatus !== 'published'
+            ? now
+            : existing.publishedAt,
+        body: nextBody,
+        generationOptions: patch.generationOptions ?? existing.generationOptions,
+        promptId: patch.promptId !== undefined ? patch.promptId : existing.promptId,
+        promptVersion:
+          patch.promptVersion !== undefined ? patch.promptVersion : existing.promptVersion,
+        model: patch.model !== undefined ? patch.model : existing.model,
+        generatedAt: patch.generatedAt !== undefined ? patch.generatedAt : existing.generatedAt,
+        updatedAt: now,
+      };
+
+      db.contentAssets[idx] = updated;
+      this.syncLocalContentStudioMetrics(db, brandId, now);
+
+      if (patch.workflowStatus && patch.workflowStatus !== existing.workflowStatus) {
+        db.activities.unshift(
+          this.buildActivity(
+            brand.brand.id,
+            brand.brand.brandName,
+            patch.workflowStatus === 'approved' ? 'module_completed' : 'module_updated',
+            `Marked Content Studio asset "${updated.title}" as ${patch.workflowStatus.replace(/_/g, ' ')}`,
+          ),
+        );
+        db.activities = db.activities.slice(0, 50);
+      }
+
+      await this.writeDb(db);
+      const versions = db.contentAssetVersions
+        .filter((v) => v.assetId === assetId && v.brandId === brandId && v.userId === this.userId)
+        .sort((a, b) => b.versionNumber - a.versionNumber);
+      return { ...updated, versions };
+    });
+  }
+
+  async createContentAssetVersion(
+    brandId: string,
+    assetId: string,
+    input: CreateContentAssetVersionInput,
+  ): Promise<ContentAssetWithVersions | null> {
+    if (input.source !== undefined && !isValidContentAssetSource(input.source)) {
+      throw new ContentAssetValidationError(`Invalid source: ${input.source}`);
+    }
+    if (input.workflowStatus !== undefined && !isValidContentAssetStatus(input.workflowStatus)) {
+      throw new ContentAssetValidationError(`Invalid workflowStatus: ${input.workflowStatus}`);
+    }
+    const body = sanitizeAssetBody(input.body);
+
+    return this.runSerialized(async () => {
+      const db = await this.readDb();
+      this.requireOwnedBrand(db, brandId);
+      const idx = db.contentAssets.findIndex(
+        (a) => a.id === assetId && a.brandId === brandId && a.userId === this.userId,
+      );
+      if (idx === -1) return null;
+
+      const existing = db.contentAssets[idx];
+      const existingVersions = db.contentAssetVersions.filter(
+        (v) => v.assetId === assetId && v.brandId === brandId && v.userId === this.userId,
+      );
+      const maxVer = existingVersions.reduce((acc, v) => Math.max(acc, v.versionNumber), 0);
+      const nextVersionNumber = Math.max(existing.currentVersionNumber, maxVer) + 1;
+      const now = new Date().toISOString();
+      const nextTitle = input.title?.trim() || existing.title;
+      const nextSource: ContentAssetSource = input.source ?? 'edited_ai';
+      const isProtectedStatus =
+        existing.workflowStatus === 'approved' || existing.workflowStatus === 'published';
+      const nextStatus: ContentAssetStatus =
+        input.workflowStatus ?? (isProtectedStatus ? 'in_progress' : existing.workflowStatus);
+
+      const version: ContentAssetVersion = {
+        id: crypto.randomUUID(),
+        userId: this.userId,
+        brandId,
+        assetId,
+        versionNumber: nextVersionNumber,
+        title: nextTitle,
+        body,
+        changeSummary: String(input.changeSummary ?? `Version ${nextVersionNumber} saved`).trim(),
+        actionType: String(input.actionType ?? 'refinement').trim(),
+        source: nextSource,
+        promptId: input.promptId !== undefined ? input.promptId : existing.promptId,
+        promptVersion:
+          input.promptVersion !== undefined ? input.promptVersion : existing.promptVersion,
+        model: input.model !== undefined ? input.model : existing.model,
+        createdAt: now,
+      };
+
+      const updated: ContentAsset = {
+        ...existing,
+        title: nextTitle,
+        body,
+        source: nextSource,
+        workflowStatus: nextStatus,
+        currentVersionNumber: nextVersionNumber,
+        promptId: version.promptId,
+        promptVersion: version.promptVersion,
+        model: version.model,
+        generatedAt: input.generatedAt !== undefined ? input.generatedAt : existing.generatedAt,
+        updatedAt: now,
+      };
+
+      db.contentAssetVersions.unshift(version);
+      db.contentAssets[idx] = updated;
+      this.syncLocalContentStudioMetrics(db, brandId, now);
+      await this.writeDb(db);
+
+      const versions = db.contentAssetVersions
+        .filter((v) => v.assetId === assetId && v.brandId === brandId && v.userId === this.userId)
+        .sort((a, b) => b.versionNumber - a.versionNumber);
+      return { ...updated, versions };
+    });
+  }
+
+  async deleteContentAsset(brandId: string, assetId: string): Promise<boolean> {
+    return this.runSerialized(async () => {
+      const db = await this.readDb();
+      this.requireOwnedBrand(db, brandId);
+      const idx = db.contentAssets.findIndex(
+        (a) => a.id === assetId && a.brandId === brandId && a.userId === this.userId,
+      );
+      if (idx === -1) return false;
+      db.contentAssets.splice(idx, 1);
+      db.contentAssetVersions = db.contentAssetVersions.filter((v) => v.assetId !== assetId);
+      this.syncLocalContentStudioMetrics(db, brandId, new Date().toISOString());
       await this.writeDb(db);
       return true;
     });
@@ -2029,6 +2702,532 @@ export class SupabaseStorageRepository implements StorageRepository {
       `content_calendar_items?id=eq.${encodeURIComponent(itemId)}&calendar_id=eq.${encodeURIComponent(calendarId)}&brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}`,
       { method: 'DELETE' },
     );
+    return true;
+  }
+
+  private async syncSupabaseContentStudioMetrics(brand: Brand, now: string): Promise<void> {
+    const assets = await this.listContentAssets(brand.id);
+    const { moduleStatus, contentPiecesCount, pendingApprovalsCount } =
+      deriveContentStudioMetrics(assets);
+    const nextStatuses: BrandModuleStatuses = {
+      ...defaultModuleStatuses(),
+      ...(brand.moduleStatuses ?? defaultModuleStatuses()),
+      contentStudio: moduleStatus,
+    };
+    await this.request(
+      `brands?id=eq.${encodeURIComponent(brand.id)}&user_id=eq.${encodeURIComponent(this.userId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          module_statuses: nextStatuses,
+          content_pieces_count: contentPiecesCount,
+          pending_approvals_count: pendingApprovalsCount,
+          updated_at: now,
+        }),
+      },
+    );
+  }
+
+  private mapSupabaseRowToContentAsset(row: Record<string, unknown>): ContentAsset {
+    const formatCategory = isValidContentAssetFormatCategory(String(row.format_category ?? ''))
+      ? (row.format_category as ContentAssetFormatCategory)
+      : 'social_post';
+    const contentLength = isValidContentLengthPreference(String(row.content_length ?? ''))
+      ? (row.content_length as ContentLengthPreference)
+      : 'medium';
+    const platform = String(row.platform ?? '');
+    const formatLabel = String(row.format_label ?? '');
+    const toneOfVoice = String(row.tone_of_voice ?? '');
+    const contentObjective = String(row.content_objective ?? '');
+    const targetAudience = String(row.target_audience ?? '');
+    const rawBody =
+      typeof row.body === 'object' && row.body !== null && !Array.isArray(row.body)
+        ? sanitizeAssetBody(row.body)
+        : sanitizeAssetBody({});
+    const rawOpts =
+      typeof row.generation_options === 'object' &&
+      row.generation_options !== null &&
+      !Array.isArray(row.generation_options)
+        ? (row.generation_options as ContentStudioGenerationOptions)
+        : defaultGenerationOptions(
+            platform,
+            formatCategory,
+            formatLabel,
+            toneOfVoice,
+            contentLength,
+            contentObjective,
+            targetAudience,
+          );
+
+    return {
+      id: String(row.id),
+      userId: String(row.user_id),
+      brandId: String(row.brand_id),
+      calendarId: (row.calendar_id as string | null) ?? null,
+      calendarItemId: (row.calendar_item_id as string | null) ?? null,
+      title: String(row.title ?? ''),
+      platform,
+      formatCategory,
+      formatLabel,
+      contentPillar: String(row.content_pillar ?? ''),
+      contentTheme: String(row.content_theme ?? ''),
+      targetAudience,
+      contentObjective,
+      toneOfVoice,
+      contentLength,
+      scheduledDate: (row.scheduled_date as string | null) ?? null,
+      workflowStatus: isValidContentAssetStatus(String(row.workflow_status ?? ''))
+        ? (row.workflow_status as ContentAssetStatus)
+        : 'draft',
+      source: isValidContentAssetSource(String(row.source ?? ''))
+        ? (row.source as ContentAssetSource)
+        : 'ai_generated',
+      currentVersionNumber:
+        typeof row.current_version_number === 'number' ? row.current_version_number : 1,
+      approvedVersionNumber:
+        typeof row.approved_version_number === 'number' ? row.approved_version_number : null,
+      approvedAt: (row.approved_at as string | null) ?? null,
+      publishedAt: (row.published_at as string | null) ?? null,
+      body: rawBody,
+      generationOptions: rawOpts,
+      handoffSnapshot: (row.handoff_snapshot as ContentStudioHandoffPayload | null) ?? null,
+      promptId: (row.prompt_id as string | null) ?? null,
+      promptVersion: (row.prompt_version as string | null) ?? null,
+      model: (row.model as string | null) ?? null,
+      generatedAt: (row.generated_at as string | null) ?? null,
+      createdAt: String(row.created_at ?? ''),
+      updatedAt: String(row.updated_at ?? ''),
+    };
+  }
+
+  private mapSupabaseRowToContentAssetVersion(row: Record<string, unknown>): ContentAssetVersion {
+    return {
+      id: String(row.id),
+      userId: String(row.user_id),
+      brandId: String(row.brand_id),
+      assetId: String(row.asset_id),
+      versionNumber: typeof row.version_number === 'number' ? row.version_number : 1,
+      title: String(row.title ?? ''),
+      body:
+        typeof row.body === 'object' && row.body !== null && !Array.isArray(row.body)
+          ? sanitizeAssetBody(row.body)
+          : sanitizeAssetBody({}),
+      changeSummary: String(row.change_summary ?? ''),
+      actionType: String(row.action_type ?? 'initial'),
+      source: isValidContentAssetSource(String(row.source ?? ''))
+        ? (row.source as ContentAssetSource)
+        : 'ai_generated',
+      promptId: (row.prompt_id as string | null) ?? null,
+      promptVersion: (row.prompt_version as string | null) ?? null,
+      model: (row.model as string | null) ?? null,
+      createdAt: String(row.created_at ?? ''),
+    };
+  }
+
+  async listContentAssets(brandId: string): Promise<ContentAsset[]> {
+    await this.requireOwnedBrand(brandId);
+    const rows = await this.request<Record<string, unknown>[]>(
+      `content_assets?brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}&select=*&order=updated_at.desc`,
+    );
+    return rows.map((row) => this.mapSupabaseRowToContentAsset(row));
+  }
+
+  async getContentAsset(
+    brandId: string,
+    assetId: string,
+  ): Promise<ContentAssetWithVersions | null> {
+    await this.requireOwnedBrand(brandId);
+    const rows = await this.request<Record<string, unknown>[]>(
+      `content_assets?id=eq.${encodeURIComponent(assetId)}&brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}&select=*`,
+    );
+    if (!rows[0]) return null;
+    const asset = this.mapSupabaseRowToContentAsset(rows[0]);
+    const versionRows = await this.request<Record<string, unknown>[]>(
+      `content_asset_versions?asset_id=eq.${encodeURIComponent(assetId)}&brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}&select=*&order=version_number.desc`,
+    );
+    return {
+      ...asset,
+      versions: versionRows.map((v) => this.mapSupabaseRowToContentAssetVersion(v)),
+    };
+  }
+
+  async createContentAsset(
+    brandId: string,
+    input: CreateContentAssetInput,
+  ): Promise<ContentAssetWithVersions> {
+    const brand = await this.requireOwnedBrand(brandId);
+    const title = String(input.title ?? '').trim();
+    if (!title || title.length < 2) {
+      throw new ContentAssetValidationError('Asset title must be at least 2 characters.');
+    }
+    const platform = String(input.platform ?? '').trim();
+    if (!platform) {
+      throw new ContentAssetValidationError('Platform is required.');
+    }
+    const formatCategory: ContentAssetFormatCategory = input.formatCategory ?? 'social_post';
+    if (!isValidContentAssetFormatCategory(formatCategory)) {
+      throw new ContentAssetValidationError(`Invalid formatCategory: ${formatCategory}`);
+    }
+    const workflowStatus: ContentAssetStatus = input.workflowStatus ?? 'draft';
+    if (!isValidContentAssetStatus(workflowStatus)) {
+      throw new ContentAssetValidationError(`Invalid workflowStatus: ${workflowStatus}`);
+    }
+    const source: ContentAssetSource = input.source ?? 'ai_generated';
+    if (!isValidContentAssetSource(source)) {
+      throw new ContentAssetValidationError(`Invalid source: ${source}`);
+    }
+    const contentLength: ContentLengthPreference = input.contentLength ?? 'medium';
+    if (!isValidContentLengthPreference(contentLength)) {
+      throw new ContentAssetValidationError(`Invalid contentLength: ${contentLength}`);
+    }
+    const scheduledDate =
+      input.scheduledDate && String(input.scheduledDate).trim()
+        ? String(input.scheduledDate).trim()
+        : null;
+    if (scheduledDate && !isValidIsoDateString(scheduledDate)) {
+      throw new ContentAssetValidationError('scheduledDate must be a valid YYYY-MM-DD date.');
+    }
+    const body = sanitizeAssetBody(input.body);
+
+    const calendarId = input.calendarId ? String(input.calendarId).trim() : null;
+    const calendarItemId = input.calendarItemId ? String(input.calendarItemId).trim() : null;
+
+    if (calendarId) {
+      const calRows = await this.request<Record<string, unknown>[]>(
+        `content_calendars?id=eq.${encodeURIComponent(calendarId)}&brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}&select=id`,
+      );
+      if (!calRows[0]) {
+        throw new ContentAssetValidationError(
+          'Linked content calendar does not belong to this brand.',
+        );
+      }
+    }
+    if (calendarItemId) {
+      const itemRows = await this.request<Record<string, unknown>[]>(
+        `content_calendar_items?id=eq.${encodeURIComponent(calendarItemId)}&brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}&select=id,calendar_id`,
+      );
+      if (!itemRows[0]) {
+        throw new ContentAssetValidationError(
+          'Linked content calendar entry does not belong to this brand.',
+        );
+      }
+      if (calendarId && String(itemRows[0].calendar_id) !== calendarId) {
+        throw new ContentAssetValidationError(
+          'Linked calendar entry does not belong to the specified calendar.',
+        );
+      }
+    }
+
+    const now = new Date().toISOString();
+    const formatLabel = String(input.formatLabel ?? '').trim();
+    const toneOfVoice = String(input.toneOfVoice ?? '').trim();
+    const contentObjective = String(input.contentObjective ?? '').trim();
+    const targetAudience = String(input.targetAudience ?? '').trim();
+    const generationOptions =
+      input.generationOptions ??
+      defaultGenerationOptions(
+        platform,
+        formatCategory,
+        formatLabel,
+        toneOfVoice,
+        contentLength,
+        contentObjective,
+        targetAudience,
+      );
+
+    const rows = await this.request<Record<string, unknown>[]>('content_assets', {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({
+        user_id: this.userId,
+        brand_id: brandId,
+        calendar_id: calendarId,
+        calendar_item_id: calendarItemId,
+        title,
+        platform,
+        format_category: formatCategory,
+        format_label: formatLabel,
+        content_pillar: String(input.contentPillar ?? '').trim(),
+        content_theme: String(input.contentTheme ?? '').trim(),
+        target_audience: targetAudience,
+        content_objective: contentObjective,
+        tone_of_voice: toneOfVoice,
+        content_length: contentLength,
+        scheduled_date: scheduledDate,
+        workflow_status: workflowStatus,
+        source,
+        current_version_number: 1,
+        approved_version_number: workflowStatus === 'approved' ? 1 : null,
+        approved_at: workflowStatus === 'approved' ? now : null,
+        published_at: workflowStatus === 'published' ? now : null,
+        body,
+        generation_options: generationOptions,
+        handoff_snapshot: input.handoffSnapshot ?? null,
+        prompt_id: input.promptId ?? null,
+        prompt_version: input.promptVersion ?? null,
+        model: input.model ?? null,
+        generated_at: input.generatedAt ?? null,
+      }),
+    });
+
+    const created = this.mapSupabaseRowToContentAsset(rows[0]);
+    const verRows = await this.request<Record<string, unknown>[]>('content_asset_versions', {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({
+        user_id: this.userId,
+        brand_id: brandId,
+        asset_id: created.id,
+        version_number: 1,
+        title: created.title,
+        body: created.body,
+        change_summary: String(input.changeSummary ?? 'Initial draft created').trim(),
+        action_type: String(input.actionType ?? 'initial').trim(),
+        source: created.source,
+        prompt_id: created.promptId,
+        prompt_version: created.promptVersion,
+        model: created.model,
+      }),
+    });
+
+    await this.syncSupabaseContentStudioMetrics(brand, now);
+    await this.request('brand_activities', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: this.userId,
+        brand_id: brand.id,
+        brand_name: brand.brandName,
+        type: 'module_updated',
+        description: `Created Content Studio asset "${created.title}" for ${brand.brandName}`,
+      }),
+    });
+
+    return {
+      ...created,
+      versions: verRows.map((v) => this.mapSupabaseRowToContentAssetVersion(v)),
+    };
+  }
+
+  async updateContentAsset(
+    brandId: string,
+    assetId: string,
+    patch: UpdateContentAssetInput,
+  ): Promise<ContentAssetWithVersions | null> {
+    const brand = await this.requireOwnedBrand(brandId);
+    if (patch.formatCategory !== undefined && !isValidContentAssetFormatCategory(patch.formatCategory)) {
+      throw new ContentAssetValidationError(`Invalid formatCategory: ${patch.formatCategory}`);
+    }
+    if (patch.workflowStatus !== undefined && !isValidContentAssetStatus(patch.workflowStatus)) {
+      throw new ContentAssetValidationError(`Invalid workflowStatus: ${patch.workflowStatus}`);
+    }
+    if (patch.source !== undefined && !isValidContentAssetSource(patch.source)) {
+      throw new ContentAssetValidationError(`Invalid source: ${patch.source}`);
+    }
+    if (patch.contentLength !== undefined && !isValidContentLengthPreference(patch.contentLength)) {
+      throw new ContentAssetValidationError(`Invalid contentLength: ${patch.contentLength}`);
+    }
+    if (
+      patch.scheduledDate !== undefined &&
+      patch.scheduledDate !== null &&
+      patch.scheduledDate !== '' &&
+      !isValidIsoDateString(patch.scheduledDate)
+    ) {
+      throw new ContentAssetValidationError('scheduledDate must be a valid YYYY-MM-DD date.');
+    }
+
+    const existingWithVersions = await this.getContentAsset(brandId, assetId);
+    if (!existingWithVersions) return null;
+
+    const sanitizedBody = patch.body !== undefined ? sanitizeAssetBody(patch.body) : undefined;
+    const now = new Date().toISOString();
+    const isProtectedStatus =
+      existingWithVersions.workflowStatus === 'approved' ||
+      existingWithVersions.workflowStatus === 'published';
+    const shouldSnapshotVersion =
+      sanitizedBody !== undefined && (patch.createVersion === true || isProtectedStatus);
+
+    let nextVersionNumber = existingWithVersions.currentVersionNumber;
+    const nextTitle =
+      patch.title !== undefined
+        ? patch.title.trim() || existingWithVersions.title
+        : existingWithVersions.title;
+    const nextBody = sanitizedBody ?? existingWithVersions.body;
+    const nextSource: ContentAssetSource =
+      patch.source ??
+      (sanitizedBody !== undefined && existingWithVersions.source === 'ai_generated'
+        ? 'edited_ai'
+        : existingWithVersions.source);
+
+    if (shouldSnapshotVersion) {
+      const maxVer = existingWithVersions.versions.reduce(
+        (acc, v) => Math.max(acc, v.versionNumber),
+        0,
+      );
+      nextVersionNumber = Math.max(existingWithVersions.currentVersionNumber, maxVer) + 1;
+      await this.request('content_asset_versions', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: this.userId,
+          brand_id: brandId,
+          asset_id: assetId,
+          version_number: nextVersionNumber,
+          title: nextTitle,
+          body: nextBody,
+          change_summary: String(
+            patch.changeSummary ??
+              (isProtectedStatus
+                ? 'Edited previously approved asset (preserved approved snapshot)'
+                : 'Saved new draft version'),
+          ).trim(),
+          action_type: String(patch.actionType ?? 'manual_edit').trim(),
+          source: nextSource,
+          prompt_id:
+            patch.promptId !== undefined ? patch.promptId : existingWithVersions.promptId,
+          prompt_version:
+            patch.promptVersion !== undefined
+              ? patch.promptVersion
+              : existingWithVersions.promptVersion,
+          model: patch.model !== undefined ? patch.model : existingWithVersions.model,
+        }),
+      });
+    }
+
+    const nextStatus: ContentAssetStatus =
+      patch.workflowStatus ??
+      (sanitizedBody !== undefined && isProtectedStatus
+        ? 'in_progress'
+        : existingWithVersions.workflowStatus);
+
+    const bodyPatch: Record<string, unknown> = {
+      updated_at: now,
+      title: nextTitle,
+      workflow_status: nextStatus,
+      source: nextSource,
+      current_version_number: nextVersionNumber,
+    };
+    if (patch.platform !== undefined) bodyPatch.platform = patch.platform.trim();
+    if (patch.formatCategory !== undefined) bodyPatch.format_category = patch.formatCategory;
+    if (patch.formatLabel !== undefined) bodyPatch.format_label = patch.formatLabel.trim();
+    if (patch.contentPillar !== undefined) bodyPatch.content_pillar = patch.contentPillar.trim();
+    if (patch.contentTheme !== undefined) bodyPatch.content_theme = patch.contentTheme.trim();
+    if (patch.targetAudience !== undefined) bodyPatch.target_audience = patch.targetAudience.trim();
+    if (patch.contentObjective !== undefined) {
+      bodyPatch.content_objective = patch.contentObjective.trim();
+    }
+    if (patch.toneOfVoice !== undefined) bodyPatch.tone_of_voice = patch.toneOfVoice.trim();
+    if (patch.contentLength !== undefined) bodyPatch.content_length = patch.contentLength;
+    if (patch.scheduledDate !== undefined) {
+      bodyPatch.scheduled_date =
+        patch.scheduledDate && patch.scheduledDate.trim() ? patch.scheduledDate.trim() : null;
+    }
+    if (sanitizedBody !== undefined) bodyPatch.body = nextBody;
+    if (patch.generationOptions !== undefined) {
+      bodyPatch.generation_options = patch.generationOptions;
+    }
+    if (patch.promptId !== undefined) bodyPatch.prompt_id = patch.promptId;
+    if (patch.promptVersion !== undefined) bodyPatch.prompt_version = patch.promptVersion;
+    if (patch.model !== undefined) bodyPatch.model = patch.model;
+    if (patch.generatedAt !== undefined) bodyPatch.generated_at = patch.generatedAt;
+    if (nextStatus === 'approved') {
+      bodyPatch.approved_version_number = nextVersionNumber;
+      if (existingWithVersions.workflowStatus !== 'approved') {
+        bodyPatch.approved_at = now;
+      }
+    }
+    if (nextStatus === 'published' && existingWithVersions.workflowStatus !== 'published') {
+      bodyPatch.published_at = now;
+    }
+
+    await this.request(
+      `content_assets?id=eq.${encodeURIComponent(assetId)}&brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(bodyPatch),
+      },
+    );
+
+    await this.syncSupabaseContentStudioMetrics(brand, now);
+    return this.getContentAsset(brandId, assetId);
+  }
+
+  async createContentAssetVersion(
+    brandId: string,
+    assetId: string,
+    input: CreateContentAssetVersionInput,
+  ): Promise<ContentAssetWithVersions | null> {
+    const brand = await this.requireOwnedBrand(brandId);
+    if (input.source !== undefined && !isValidContentAssetSource(input.source)) {
+      throw new ContentAssetValidationError(`Invalid source: ${input.source}`);
+    }
+    if (input.workflowStatus !== undefined && !isValidContentAssetStatus(input.workflowStatus)) {
+      throw new ContentAssetValidationError(`Invalid workflowStatus: ${input.workflowStatus}`);
+    }
+    const existing = await this.getContentAsset(brandId, assetId);
+    if (!existing) return null;
+
+    const body = sanitizeAssetBody(input.body);
+    const maxVer = existing.versions.reduce((acc, v) => Math.max(acc, v.versionNumber), 0);
+    const nextVersionNumber = Math.max(existing.currentVersionNumber, maxVer) + 1;
+    const now = new Date().toISOString();
+    const nextTitle = input.title?.trim() || existing.title;
+    const nextSource: ContentAssetSource = input.source ?? 'edited_ai';
+    const isProtectedStatus =
+      existing.workflowStatus === 'approved' || existing.workflowStatus === 'published';
+    const nextStatus: ContentAssetStatus =
+      input.workflowStatus ?? (isProtectedStatus ? 'in_progress' : existing.workflowStatus);
+
+    await this.request('content_asset_versions', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: this.userId,
+        brand_id: brandId,
+        asset_id: assetId,
+        version_number: nextVersionNumber,
+        title: nextTitle,
+        body,
+        change_summary: String(input.changeSummary ?? `Version ${nextVersionNumber} saved`).trim(),
+        action_type: String(input.actionType ?? 'refinement').trim(),
+        source: nextSource,
+        prompt_id: input.promptId !== undefined ? input.promptId : existing.promptId,
+        prompt_version:
+          input.promptVersion !== undefined ? input.promptVersion : existing.promptVersion,
+        model: input.model !== undefined ? input.model : existing.model,
+      }),
+    });
+
+    await this.request(
+      `content_assets?id=eq.${encodeURIComponent(assetId)}&brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: nextTitle,
+          body,
+          source: nextSource,
+          workflow_status: nextStatus,
+          current_version_number: nextVersionNumber,
+          prompt_id: input.promptId !== undefined ? input.promptId : existing.promptId,
+          prompt_version:
+            input.promptVersion !== undefined ? input.promptVersion : existing.promptVersion,
+          model: input.model !== undefined ? input.model : existing.model,
+          generated_at: input.generatedAt !== undefined ? input.generatedAt : existing.generatedAt,
+          updated_at: now,
+        }),
+      },
+    );
+
+    await this.syncSupabaseContentStudioMetrics(brand, now);
+    return this.getContentAsset(brandId, assetId);
+  }
+
+  async deleteContentAsset(brandId: string, assetId: string): Promise<boolean> {
+    const brand = await this.requireOwnedBrand(brandId);
+    const existing = await this.getContentAsset(brandId, assetId);
+    if (!existing) return false;
+    await this.request(
+      `content_assets?id=eq.${encodeURIComponent(assetId)}&brand_id=eq.${encodeURIComponent(brandId)}&user_id=eq.${encodeURIComponent(this.userId)}`,
+      { method: 'DELETE' },
+    );
+    await this.syncSupabaseContentStudioMetrics(brand, new Date().toISOString());
     return true;
   }
 

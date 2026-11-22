@@ -844,4 +844,240 @@ test('Phase 2B Content Calendar SQL migration and schema.sql define tables, cons
   }
 });
 
+test('LocalJsonStorageRepository supports Content Studio CRUD, immutable versions, approved-snapshot protection, metrics sync, cross-brand isolation, and cascade delete', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'brandflow-studio-storage-'));
+  try {
+    const ownerRepo = new LocalJsonStorageRepository('user-owner', 'owner@example.com', tempDir);
+    const otherRepo = new LocalJsonStorageRepository('user-other', 'other@example.com', tempDir);
+
+    const brandA = await ownerRepo.createBrand(makeBrandInput({ brandName: 'Studio Brand A' }));
+    const brandB = await ownerRepo.createBrand(makeBrandInput({ brandName: 'Studio Brand B' }));
+
+    // Create a calendar + item on Brand A for valid calendar handoff linking
+    const calA = await ownerRepo.createContentCalendar(brandA.id, {
+      name: 'Dec 2026 Calendar',
+      startDate: '2026-12-01',
+      endDate: '2026-12-30',
+      durationDays: 30,
+      status: 'active',
+      settings: {
+        startDate: '2026-12-01',
+        durationDays: 30,
+        selectedPlatforms: ['LinkedIn'],
+        postsPerWeek: 3,
+        postingFrequencyLabel: '3 posts/week',
+        preferredPostingDays: ['Tuesday', 'Thursday', 'Saturday'],
+        preferredPostingTime: '09:00 AM',
+        campaignObjectiveFocus: '',
+        contentMixPreference: '',
+        teamCapacityNote: '',
+        specialDatesOrConstraints: '',
+      },
+    });
+    const itemA = await ownerRepo.createContentCalendarItem(brandA.id, calA.id, {
+      scheduledDate: '2026-12-03',
+      platform: 'LinkedIn',
+      title: 'Positioning Diagnostic Post',
+      contentPillar: 'Positioning',
+      contentFormat: 'Carousel',
+      targetAudience: 'B2B Founders',
+      contentObjective: 'Authority',
+      coreMessage: 'Clarify positioning first.',
+    });
+
+    // Cross-brand calendar/item linking must be rejected
+    await assert.rejects(
+      () =>
+        ownerRepo.createContentAsset(brandB.id, {
+          calendarId: calA.id,
+          calendarItemId: itemA.id,
+          title: 'Cross-Brand Attempt',
+          platform: 'LinkedIn',
+          formatCategory: 'carousel',
+          body: {
+            hook: 'Hook',
+            alternativeHooks: [],
+            mainCopy: 'Copy',
+            cta: 'CTA',
+            hashtags: [],
+            visualDirection: '',
+            carouselSlides: [],
+            videoScript: null,
+            articleSections: [],
+            adaptationNotes: '',
+            suppliedFactsUsed: [],
+            missingContextNotes: [],
+            researchCaveat: '',
+          },
+        }),
+      /does not belong to this brand/i,
+    );
+
+    // 1. Create asset linked to Brand A's calendar item -> creates initial v1 snapshot
+    const created = await ownerRepo.createContentAsset(brandA.id, {
+      calendarId: calA.id,
+      calendarItemId: itemA.id,
+      title: 'Positioning Diagnostic Draft',
+      platform: 'LinkedIn',
+      formatCategory: 'carousel',
+      formatLabel: 'LinkedIn Carousel',
+      contentPillar: 'Positioning',
+      targetAudience: 'B2B Founders',
+      contentObjective: 'Authority',
+      toneOfVoice: 'Sharp',
+      contentLength: 'medium',
+      scheduledDate: '2026-12-03',
+      workflowStatus: 'draft',
+      source: 'ai_generated',
+      body: {
+        hook: 'Original v1 hook',
+        alternativeHooks: [],
+        mainCopy: 'Original v1 body copy',
+        cta: 'Comment AUDIT',
+        hashtags: ['#B2B'],
+        visualDirection: 'Clean slides',
+        carouselSlides: [
+          { slideNumber: 1, headline: 'Slide 1', body: 'First insight', visualCue: 'Bold cover' },
+        ],
+        videoScript: null,
+        articleSections: [],
+        adaptationNotes: '',
+        suppliedFactsUsed: ['Brand Positioning'],
+        missingContextNotes: [],
+        researchCaveat: 'Review before publishing.',
+      },
+      changeSummary: 'Initial AI draft',
+      actionType: 'ai_generate',
+    });
+
+    assert.equal(created.currentVersionNumber, 1);
+    assert.equal(created.versions.length, 1);
+    assert.equal(created.versions[0].versionNumber, 1);
+    assert.equal(created.workflowStatus, 'draft');
+
+    // Brand metrics synced (in_progress, 1 piece, 0 pending approvals yet)
+    const brandAfterCreate = await ownerRepo.getBrand(brandA.id, false);
+    assert.equal(brandAfterCreate?.moduleStatuses.contentStudio, 'in_progress');
+    assert.equal(brandAfterCreate?.contentPiecesCount, 1);
+    assert.equal(brandAfterCreate?.pendingApprovalsCount, 0);
+
+    // Strict brand and user isolation
+    assert.equal((await ownerRepo.listContentAssets(brandB.id)).length, 0);
+    assert.equal(await ownerRepo.getContentAsset(brandB.id, created.id), null);
+    await assert.rejects(
+      () => otherRepo.listContentAssets(brandA.id),
+      /Brand not found or access denied/,
+    );
+
+    // 2. Move to ready_for_review -> pendingApprovalsCount increments to 1
+    const inReview = await ownerRepo.updateContentAsset(brandA.id, created.id, {
+      workflowStatus: 'ready_for_review',
+    });
+    assert.equal(inReview?.workflowStatus, 'ready_for_review');
+    assert.equal((await ownerRepo.getBrand(brandA.id, false))?.pendingApprovalsCount, 1);
+
+    // 3. Explicit human approval -> sets approvedAt and syncs moduleStatuses.contentStudio -> completed
+    const approved = await ownerRepo.updateContentAsset(brandA.id, created.id, {
+      workflowStatus: 'approved',
+    });
+    assert.equal(approved?.workflowStatus, 'approved');
+    assert.ok(approved?.approvedAt);
+    const brandAfterApprove = await ownerRepo.getBrand(brandA.id, false);
+    assert.equal(brandAfterApprove?.moduleStatuses.contentStudio, 'completed');
+    assert.equal(brandAfterApprove?.pendingApprovalsCount, 0);
+
+    // 4. Editing body of an approved asset NEVER overwrites approved snapshot: preserves approved version + creates new version and moves status to in_progress
+    const editedAfterApprove = await ownerRepo.updateContentAsset(brandA.id, created.id, {
+      title: 'Positioning Diagnostic Draft (v2)',
+      body: {
+        ...created.body,
+        hook: 'Revised v2 hook after approval',
+      },
+      changeSummary: 'Manual post-approval edit',
+      actionType: 'manual_edit',
+    });
+    assert.ok(editedAfterApprove);
+    assert.equal(editedAfterApprove.workflowStatus, 'in_progress');
+    assert.ok(editedAfterApprove.currentVersionNumber >= 2);
+    assert.ok(
+      editedAfterApprove.versions.some((v) => v.body.hook === 'Original v1 hook'),
+      'Approved v1 snapshot must remain preserved in version history',
+    );
+    assert.equal(editedAfterApprove.body.hook, 'Revised v2 hook after approval');
+
+    // 5. Explicit createContentAssetVersion (e.g. AI refinement) increments version immutably
+    const afterRefinement = await ownerRepo.createContentAssetVersion(brandA.id, created.id, {
+      title: 'Positioning Diagnostic Draft (Refined)',
+      body: {
+        ...editedAfterApprove.body,
+        hook: 'Refined hook v3',
+      },
+      source: 'edited_ai',
+      changeSummary: 'Improved clarity with AI',
+      actionType: 'ai_refine',
+    });
+    assert.ok(afterRefinement);
+    assert.equal(afterRefinement.currentVersionNumber, editedAfterApprove.currentVersionNumber + 1);
+    assert.equal(afterRefinement.versions.length, editedAfterApprove.versions.length + 1);
+
+    // 6. Cross-brand delete blocked; owner delete succeeds & brand cascade cleans remaining assets/versions
+    assert.equal(await ownerRepo.deleteContentAsset(brandB.id, created.id), false);
+
+    const secondAsset = await ownerRepo.createContentAsset(brandA.id, {
+      title: 'Cascade Test Asset',
+      platform: 'LinkedIn',
+      formatCategory: 'social_post',
+      body: created.body,
+    });
+    assert.ok(secondAsset.id);
+
+    assert.equal(await ownerRepo.deleteContentAsset(brandA.id, created.id), true);
+    assert.equal(await ownerRepo.getContentAsset(brandA.id, created.id), null);
+
+    // Cascade delete brand removes secondAsset and all versions
+    assert.equal(await ownerRepo.deleteBrand(brandA.id), true);
+    const rawDb = JSON.parse(
+      await fs.readFile(path.join(tempDir, 'brandflow-db.json'), 'utf-8'),
+    ) as { contentAssets: unknown[]; contentAssetVersions: unknown[] };
+    assert.equal(rawDb.contentAssets.length, 0);
+    assert.equal(rawDb.contentAssetVersions.length, 0);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('Phase 2B Content Studio SQL migration and schema.sql define tables, constraints, RLS, and authenticated-only grants', async () => {
+  const migrationSql = await fs.readFile(
+    path.resolve(process.cwd(), 'supabase/migrations/20261121_phase2b_content_studio.sql'),
+    'utf-8',
+  );
+  const schemaSql = await fs.readFile(
+    path.resolve(process.cwd(), 'supabase/schema.sql'),
+    'utf-8',
+  );
+
+  for (const sql of [migrationSql, schemaSql]) {
+    assert.match(sql, /create table if not exists public\.content_assets/);
+    assert.match(sql, /create table if not exists public\.content_asset_versions/);
+    assert.match(sql, /workflow_status text not null default 'draft' check/);
+    assert.match(sql, /format_category text not null default 'social_post' check/);
+    assert.match(sql, /content_length text not null default 'medium' check/);
+    assert.match(sql, /create or replace function public\.set_updated_at\(\)[\s\S]*?set search_path = ''/i);
+    assert.match(sql, /create or replace function public\.validate_content_asset_calendar_link\(\)[\s\S]*?set search_path = ''/i);
+    assert.match(sql, /ci\.calendar_id = new\.calendar_id/);
+    assert.match(sql, /and \(calendar_id is null or ci\.calendar_id = calendar_id\)/);
+    assert.match(sql, /enable row level security/);
+    assert.match(sql, /revoke all on public\.content_assets from anon/);
+    assert.match(sql, /revoke all on public\.content_asset_versions from anon/);
+    assert.match(sql, /grant select, insert, update, delete on public\.content_assets to authenticated/);
+    assert.match(sql, /revoke update, delete on public\.content_asset_versions from authenticated/);
+    assert.match(sql, /grant select, insert on public\.content_asset_versions to authenticated/);
+    assert.doesNotMatch(sql, /grant select, insert, update, delete on public\.content_asset_versions to authenticated/);
+    assert.match(sql, /create policy "content_asset_versions_select_own"/);
+    assert.match(sql, /create policy "content_asset_versions_insert_own"/);
+    assert.doesNotMatch(sql, /create policy "content_asset_versions_update_own"/);
+    assert.doesNotMatch(sql, /create policy "content_asset_versions_delete_own"/);
+  }
+});
+
 

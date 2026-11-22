@@ -3,6 +3,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import {
   BrandAccessError,
   CalendarValidationError,
+  ContentAssetValidationError,
   ModuleValidationError,
   createStorageRepository,
   isValidModuleStatus,
@@ -22,8 +23,11 @@ import {
 import type {
   AiErrorCategory,
   BrandFormInput,
+  CreateContentAssetInput,
+  CreateContentAssetVersionInput,
   CreateContentCalendarInput,
   CreateContentCalendarItemInput,
+  UpdateContentAssetInput,
   UpdateContentCalendarInput,
   UpdateContentCalendarItemInput,
   UpsertBrandModuleInput,
@@ -122,7 +126,11 @@ function handleModuleError(res: Response, err: unknown, fallbackMessage: string)
     res.status(404).json({ error: 'Brand not found.' });
     return;
   }
-  if (err instanceof ModuleValidationError || err instanceof CalendarValidationError) {
+  if (
+    err instanceof ModuleValidationError ||
+    err instanceof CalendarValidationError ||
+    err instanceof ContentAssetValidationError
+  ) {
     res.status(400).json({ error: err.message });
     return;
   }
@@ -142,13 +150,23 @@ function sendGatewaySafeError(
   res: Response,
   statusCode: number,
   message: string,
-  extra?: { errorCategory?: AiErrorCategory; requestId?: string },
+  extra?: { errorCategory?: AiErrorCategory; requestId?: string; retryAfterSeconds?: number },
 ) {
   const behindPreviewNginx = Boolean(process.env.NGINX_PORT?.trim());
+  const retryAfterSeconds =
+    typeof extra?.retryAfterSeconds === 'number' &&
+    Number.isFinite(extra.retryAfterSeconds) &&
+    extra.retryAfterSeconds > 0
+      ? Math.ceil(extra.retryAfterSeconds)
+      : undefined;
+  if (retryAfterSeconds !== undefined) {
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+  }
   const payload: Record<string, unknown> = {
     error: message,
     ...(extra?.errorCategory ? { errorCategory: extra.errorCategory } : {}),
     ...(extra?.requestId ? { requestId: extra.requestId } : {}),
+    ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
   };
   if (
     behindPreviewNginx &&
@@ -406,7 +424,10 @@ export function createApiApp(options?: CreateApiAppOptions) {
         return;
       }
       if (err instanceof GeminiTimeoutError || err instanceof GeminiProviderError) {
-        sendGatewaySafeError(res, err.statusCode, err.message);
+        sendGatewaySafeError(res, err.statusCode, err.message, {
+          errorCategory: err.errorCategory,
+          retryAfterSeconds: err instanceof GeminiProviderError ? err.retryAfterSeconds : undefined,
+        });
         return;
       }
       sendGatewaySafeError(
@@ -567,6 +588,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
         sendGatewaySafeError(res, err.statusCode, err.message, {
           errorCategory: err.errorCategory,
           requestId,
+          retryAfterSeconds: err instanceof GeminiProviderError ? err.retryAfterSeconds : undefined,
         });
         return;
       }
@@ -796,6 +818,146 @@ export function createApiApp(options?: CreateApiAppOptions) {
       res.json({ deleted: true });
     } catch (err) {
       handleModuleError(res, err, 'Failed to delete calendar entry.');
+    }
+  });
+
+  // ============================================================================
+  // PHASE 2B: CONTENT STUDIO ROUTES (BRAND-SCOPED & OWNER-AUTHENTICATED)
+  // ============================================================================
+
+  app.get('/api/brands/:id/content-assets', async (req, res) => {
+    const brandId = req.params.id;
+    if (!isValidBrandId(brandId)) {
+      res.status(400).json({ error: 'Invalid brand ID format.' });
+      return;
+    }
+    try {
+      const assets = await resolveStorage(req).listContentAssets(brandId);
+      res.json({ assets });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to load content assets.');
+    }
+  });
+
+  app.post('/api/brands/:id/content-assets', async (req, res) => {
+    const brandId = req.params.id;
+    if (!isValidBrandId(brandId)) {
+      res.status(400).json({ error: 'Invalid brand ID format.' });
+      return;
+    }
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      res.status(400).json({ error: 'Request body must be a JSON object.' });
+      return;
+    }
+    const raw = req.body as Record<string, unknown>;
+    if (
+      typeof raw.brandId === 'string' &&
+      raw.brandId.trim() &&
+      raw.brandId.trim() !== brandId.trim()
+    ) {
+      res.status(400).json({ error: 'Request brandId does not match route brand scope.' });
+      return;
+    }
+    try {
+      const asset = await resolveStorage(req).createContentAsset(
+        brandId,
+        req.body as CreateContentAssetInput,
+      );
+      res.status(201).json({ asset });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to create content asset.');
+    }
+  });
+
+  app.get('/api/brands/:id/content-assets/:assetId', async (req, res) => {
+    const brandId = req.params.id;
+    const assetId = req.params.assetId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(assetId)) {
+      res.status(400).json({ error: 'Invalid brand or asset ID format.' });
+      return;
+    }
+    try {
+      const asset = await resolveStorage(req).getContentAsset(brandId, assetId);
+      if (!asset) {
+        res.status(404).json({ error: 'Content asset not found.' });
+        return;
+      }
+      res.json({ asset });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to load content asset.');
+    }
+  });
+
+  app.patch('/api/brands/:id/content-assets/:assetId', async (req, res) => {
+    const brandId = req.params.id;
+    const assetId = req.params.assetId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(assetId)) {
+      res.status(400).json({ error: 'Invalid brand or asset ID format.' });
+      return;
+    }
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      res.status(400).json({ error: 'Request body must be a JSON object.' });
+      return;
+    }
+    try {
+      const asset = await resolveStorage(req).updateContentAsset(
+        brandId,
+        assetId,
+        req.body as UpdateContentAssetInput,
+      );
+      if (!asset) {
+        res.status(404).json({ error: 'Content asset not found.' });
+        return;
+      }
+      res.json({ asset });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to update content asset.');
+    }
+  });
+
+  app.post('/api/brands/:id/content-assets/:assetId/versions', async (req, res) => {
+    const brandId = req.params.id;
+    const assetId = req.params.assetId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(assetId)) {
+      res.status(400).json({ error: 'Invalid brand or asset ID format.' });
+      return;
+    }
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      res.status(400).json({ error: 'Request body must be a JSON object.' });
+      return;
+    }
+    try {
+      const asset = await resolveStorage(req).createContentAssetVersion(
+        brandId,
+        assetId,
+        req.body as CreateContentAssetVersionInput,
+      );
+      if (!asset) {
+        res.status(404).json({ error: 'Content asset not found.' });
+        return;
+      }
+      res.status(201).json({ asset });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to create content asset version.');
+    }
+  });
+
+  app.delete('/api/brands/:id/content-assets/:assetId', async (req, res) => {
+    const brandId = req.params.id;
+    const assetId = req.params.assetId;
+    if (!isValidBrandId(brandId) || !isValidBrandId(assetId)) {
+      res.status(400).json({ error: 'Invalid brand or asset ID format.' });
+      return;
+    }
+    try {
+      const deleted = await resolveStorage(req).deleteContentAsset(brandId, assetId);
+      if (!deleted) {
+        res.status(404).json({ error: 'Content asset not found.' });
+        return;
+      }
+      res.json({ deleted: true });
+    } catch (err) {
+      handleModuleError(res, err, 'Failed to delete content asset.');
     }
   });
 

@@ -4,6 +4,7 @@ import { ThinkingLevel } from '@google/genai';
 import {
   DEFAULT_AI_TIMEOUT_MS,
   DEFAULT_GEMINI_MODEL,
+  DEFAULT_RATE_LIMIT_COOLDOWN_MS,
   FALLBACK_GEMINI_MODEL,
   GeminiConfigError,
   GeminiProviderError,
@@ -11,7 +12,11 @@ import {
   MAX_CONTEXT_LENGTH,
   MAX_PROMPT_LENGTH,
   buildGeminiContents,
+  clearGeminiRateLimitCooldowns,
+  extractRetryAfterMs,
   generateGeminiContent,
+  getModelRateLimitCooldownRemainingMs,
+  isHardQuotaExhaustionError,
   isRetryableProviderError,
   sanitizeProviderError,
   validateAiGenerateBody,
@@ -322,8 +327,10 @@ test('generateGeminiContent uses 50s timeout, ThinkingLevel.LOW for gemini-4-hyd
       );
       assert.equal(seenLiteThinking, undefined);
 
-      // 3. Verify non-retryable 429 fails immediately without retrying
-      let rateAttempts = 0;
+      // 3. Verify 429 is non-retryable on same primary model, but falls back once to gemini-3.1-flash-lite
+      // and fails cleanly without retry storms when hard quota is exhausted across both models.
+      clearGeminiRateLimitCooldowns();
+      const rateModelsSeen: string[] = [];
       assert.equal(
         isRetryableProviderError(Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 })),
         false,
@@ -340,11 +347,14 @@ test('generateGeminiContent uses 50s timeout, ThinkingLevel.LOW for gemini-4-hyd
             { prompt: 'Quota hit', model: 'gemini-4-hydrogen' },
             {
               retryBaseDelayMs: 5,
+              useRateLimitCooldown: false,
               clientFactory: () => ({
                 models: {
-                  async generateContent() {
-                    rateAttempts += 1;
-                    const err = new Error('RESOURCE_EXHAUSTED') as Error & { status?: number };
+                  async generateContent(params) {
+                    rateModelsSeen.push(params.model);
+                    const err = new Error(
+                      'RESOURCE_EXHAUSTED: GenerateRequestsPerDayPerProjectPerModel limit: 0',
+                    ) as Error & { status?: number };
                     err.status = 429;
                     throw err;
                   },
@@ -352,9 +362,12 @@ test('generateGeminiContent uses 50s timeout, ThinkingLevel.LOW for gemini-4-hyd
               }),
             },
           ),
-        (err: unknown) => err instanceof GeminiProviderError && err.statusCode === 429,
+        (err: unknown) =>
+          err instanceof GeminiProviderError &&
+          err.statusCode === 429 &&
+          err.errorCategory === 'rate_limited',
       );
-      assert.equal(rateAttempts, 1);
+      assert.deepEqual(rateModelsSeen, ['gemini-4-hydrogen', FALLBACK_GEMINI_MODEL]);
 
       // 4. Verify persistent 503 exhausts maxRetries and returns 503 busy message
       let busyAttempts = 0;
@@ -617,6 +630,209 @@ test('Gemini errors carry explicit errorCategory values and diagnostic logs incl
   assert.equal(combinedLogs.includes('SECRET_PROMPT_TEXT_MUST_NOT_APPEAR_IN_LOGS'), false);
   assert.equal(combinedLogs.includes('AIzaSyDiagSecret12345'), false);
 });
+
+test('generateGeminiContent recovers from 429 rate limits via gemini-3.1-flash-lite fallback, cooldown routing, and bounded RPM retry', async () => {
+  clearGeminiRateLimitCooldowns();
+
+  // Helper extraction checks
+  assert.equal(
+    extractRetryAfterMs(new Error('RESOURCE_EXHAUSTED. Please retry in 12.2s.')),
+    12_200,
+  );
+  assert.equal(
+    extractRetryAfterMs({ details: [{ retryDelay: '3s' }] }),
+    3_000,
+  );
+  assert.equal(
+    extractRetryAfterMs({
+      headers: { get: (name: string) => (name === 'retry-after' ? '25' : null) },
+    }),
+    25_000,
+  );
+  assert.equal(
+    isHardQuotaExhaustionError(new Error('Quota exceeded for GenerateRequestsPerDayPerProjectPerModel')),
+    true,
+  );
+  assert.equal(
+    isHardQuotaExhaustionError(new Error('RESOURCE_EXHAUSTED: RPM burst')),
+    false,
+  );
+
+  let fakeNow = 1_700_000_000_000;
+  const now = () => fakeNow;
+
+  await withEnv({ GEMINI_API_KEY: 'AIzaSyRateLimitFallbackTestKey12345' }, async () => {
+    // 1. Primary 429 immediately falls back to gemini-3.1-flash-lite (without thinkingConfig) and succeeds
+    const callModels1: string[] = [];
+    const callThinking1: Array<unknown> = [];
+
+    const recovered = await generateGeminiContent(
+      {
+        prompt: 'Generate LinkedIn post draft',
+        model: DEFAULT_GEMINI_MODEL,
+        responseMimeType: 'application/json',
+      },
+      {
+        retryBaseDelayMs: 5,
+        now,
+        clientFactory: () => ({
+          models: {
+            async generateContent(params) {
+              callModels1.push(params.model);
+              callThinking1.push(params.config?.thinkingConfig);
+              if (params.model === DEFAULT_GEMINI_MODEL) {
+                const err = new Error('429 RESOURCE_EXHAUSTED Please retry in 30s') as Error & {
+                  status?: number;
+                };
+                err.status = 429;
+                throw err;
+              }
+              return { text: '{"ok":true,"draft":"Ready"}' };
+            },
+          },
+        }),
+      },
+    );
+
+    assert.deepEqual(callModels1, [DEFAULT_GEMINI_MODEL, FALLBACK_GEMINI_MODEL]);
+    assert.equal(
+      (callThinking1[0] as { thinkingLevel?: ThinkingLevel })?.thinkingLevel,
+      ThinkingLevel.LOW,
+    );
+    assert.equal(callThinking1[1], undefined);
+    assert.equal(recovered.model, FALLBACK_GEMINI_MODEL);
+    assert.equal(recovered.text, '{"ok":true,"draft":"Ready"}');
+    assert.ok(getModelRateLimitCooldownRemainingMs(DEFAULT_GEMINI_MODEL, fakeNow) > 0);
+
+    // 2. Subsequent call during cooldown skips primary and routes directly to gemini-3.1-flash-lite
+    const callModels2: string[] = [];
+    const cooldownRouted = await generateGeminiContent(
+      {
+        prompt: 'Generate carousel draft',
+        model: DEFAULT_GEMINI_MODEL,
+      },
+      {
+        retryBaseDelayMs: 5,
+        now,
+        clientFactory: () => ({
+          models: {
+            async generateContent(params) {
+              callModels2.push(params.model);
+              return { text: 'Routed straight to lite' };
+            },
+          },
+        }),
+      },
+    );
+    assert.deepEqual(callModels2, [FALLBACK_GEMINI_MODEL]);
+    assert.equal(cooldownRouted.model, FALLBACK_GEMINI_MODEL);
+
+    // 3. Once cooldown expires, primary model is automatically used again
+    fakeNow += DEFAULT_RATE_LIMIT_COOLDOWN_MS + 1_000;
+    assert.equal(getModelRateLimitCooldownRemainingMs(DEFAULT_GEMINI_MODEL, fakeNow), 0);
+
+    const callModels3: string[] = [];
+    const resumedPrimary = await generateGeminiContent(
+      {
+        prompt: 'Generate article draft',
+        model: DEFAULT_GEMINI_MODEL,
+      },
+      {
+        retryBaseDelayMs: 5,
+        now,
+        clientFactory: () => ({
+          models: {
+            async generateContent(params) {
+              callModels3.push(params.model);
+              return { text: 'Primary resumed' };
+            },
+          },
+        }),
+      },
+    );
+    assert.deepEqual(callModels3, [DEFAULT_GEMINI_MODEL]);
+    assert.equal(resumedPrimary.model, DEFAULT_GEMINI_MODEL);
+
+    // 4. Brief transient RPM 429 on fallback model allows 1 bounded retry and succeeds
+    clearGeminiRateLimitCooldowns();
+    const callModels4: string[] = [];
+    let liteHits = 0;
+    const recoveredAfterBriefBurst = await generateGeminiContent(
+      {
+        prompt: 'Generate short script',
+        model: DEFAULT_GEMINI_MODEL,
+      },
+      {
+        retryBaseDelayMs: 5,
+        useRateLimitCooldown: false,
+        clientFactory: () => ({
+          models: {
+            async generateContent(params) {
+              callModels4.push(params.model);
+              if (params.model === DEFAULT_GEMINI_MODEL) {
+                throw Object.assign(new Error('RESOURCE_EXHAUSTED'), { status: 429 });
+              }
+              liteHits += 1;
+              if (liteHits === 1) {
+                throw Object.assign(new Error('RESOURCE_EXHAUSTED retry in 10ms'), { status: 429 });
+              }
+              return { text: 'Recovered after brief RPM burst' };
+            },
+          },
+        }),
+      },
+    );
+    assert.deepEqual(callModels4, [
+      DEFAULT_GEMINI_MODEL,
+      FALLBACK_GEMINI_MODEL,
+      FALLBACK_GEMINI_MODEL,
+    ]);
+    assert.equal(recoveredAfterBriefBurst.text, 'Recovered after brief RPM burst');
+
+    // 5. Long retryDelay (e.g. 42s) on fallback fails fast without hanging or leaking secrets
+    clearGeminiRateLimitCooldowns();
+    const callModels5: string[] = [];
+    await assert.rejects(
+      () =>
+        generateGeminiContent(
+          {
+            prompt: 'Exhausted everywhere',
+            model: DEFAULT_GEMINI_MODEL,
+          },
+          {
+            retryBaseDelayMs: 5,
+            useRateLimitCooldown: false,
+            clientFactory: () => ({
+              models: {
+                async generateContent(params) {
+                  callModels5.push(params.model);
+                  throw Object.assign(
+                    new Error(
+                      'RESOURCE_EXHAUSTED secret=AIzaSyMustNeverLeak Please retry in 42s',
+                    ),
+                    { status: 429 },
+                  );
+                },
+              },
+            }),
+          },
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof GeminiProviderError);
+        assert.equal(err.statusCode, 429);
+        assert.equal(err.errorCategory, 'rate_limited');
+        assert.equal(err.retryAfterSeconds, 42);
+        assert.match(err.message, /42 seconds/i);
+        assert.equal(err.message.includes('AIzaSyMustNeverLeak'), false);
+        return true;
+      },
+    );
+    assert.deepEqual(callModels5, [DEFAULT_GEMINI_MODEL, FALLBACK_GEMINI_MODEL]);
+  });
+
+  clearGeminiRateLimitCooldowns();
+});
+
 
 
 

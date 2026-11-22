@@ -29,6 +29,9 @@ export const DEFAULT_AI_RETRY_BASE_DELAY_MS = 900;
 export const DEFAULT_PRIMARY_ATTEMPT_TIMEOUT_MS = 22_000;
 export const DEFAULT_SECOND_ATTEMPT_TIMEOUT_MS = 14_000;
 export const MIN_FALLBACK_BUDGET_MS = 6_000;
+export const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 45_000;
+export const MAX_RATE_LIMIT_COOLDOWN_MS = 120_000;
+export const MAX_INLINE_RATE_LIMIT_WAIT_MS = 6_000;
 
 export interface ValidatedAiGenerateInput {
   prompt: string;
@@ -90,11 +93,13 @@ export class GeminiTimeoutError extends Error {
 export class GeminiProviderError extends Error {
   readonly statusCode: number;
   readonly errorCategory: AiErrorCategory;
+  readonly retryAfterSeconds?: number;
 
   constructor(
     message: string,
     statusCode = 502,
     errorCategory?: AiErrorCategory,
+    retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'GeminiProviderError';
@@ -106,6 +111,10 @@ export class GeminiProviderError extends Error {
         : statusCode === 503
           ? 'provider_unavailable'
           : 'provider_unavailable');
+    this.retryAfterSeconds =
+      typeof retryAfterSeconds === 'number' && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+        ? Math.ceil(retryAfterSeconds)
+        : undefined;
   }
 }
 
@@ -298,6 +307,132 @@ function readNumericStatus(err: unknown): number | undefined {
   return undefined;
 }
 
+const modelRateLimitCooldownUntil = new Map<AllowedGeminiModel, number>();
+
+export function clearGeminiRateLimitCooldowns(): void {
+  modelRateLimitCooldownUntil.clear();
+}
+
+export function getModelRateLimitCooldownRemainingMs(
+  model: AllowedGeminiModel,
+  nowMs = Date.now(),
+): number {
+  const until = modelRateLimitCooldownUntil.get(model);
+  if (!until) return 0;
+  const remaining = until - nowMs;
+  if (remaining <= 0) {
+    modelRateLimitCooldownUntil.delete(model);
+    return 0;
+  }
+  return remaining;
+}
+
+function markModelRateLimited(
+  model: AllowedGeminiModel,
+  retryAfterMs: number | undefined,
+  nowMs = Date.now(),
+): void {
+  const durationMs = Math.min(
+    MAX_RATE_LIMIT_COOLDOWN_MS,
+    Math.max(DEFAULT_RATE_LIMIT_COOLDOWN_MS, retryAfterMs ?? DEFAULT_RATE_LIMIT_COOLDOWN_MS),
+  );
+  modelRateLimitCooldownUntil.set(model, nowMs + durationMs);
+}
+
+export function isRateLimitError(err: unknown): boolean {
+  if (err instanceof GeminiProviderError) {
+    return err.statusCode === 429 || err.errorCategory === 'rate_limited';
+  }
+  const status = readNumericStatus(err);
+  if (status === 429) return true;
+  const rawMessage = err instanceof Error ? err.message : '';
+  return /RESOURCE_EXHAUSTED|rate\s*limit|quota/i.test(rawMessage);
+}
+
+export function isHardQuotaExhaustionError(err: unknown): boolean {
+  const rawMessage = err instanceof Error ? err.message : '';
+  if (/per\s*day|PerDay|daily\s*quota|limit:\s*0\b|free_tier.*requests.*0/i.test(rawMessage)) {
+    return true;
+  }
+  if (typeof err === 'object' && err !== null) {
+    const details = (err as { details?: unknown }).details;
+    if (Array.isArray(details)) {
+      try {
+        const serialized = JSON.stringify(details);
+        if (/PerDay|daily|limit":0/i.test(serialized)) {
+          return true;
+        }
+      } catch {
+        // ignore unserializable error details
+      }
+    }
+  }
+  return false;
+}
+
+function parseDurationTokenToMs(value: number, unit?: string): number | undefined {
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  const normalizedUnit = (unit ?? 's').toLowerCase();
+  const ms = normalizedUnit === 'ms' ? value : value * 1000;
+  return Math.min(600_000, Math.ceil(ms));
+}
+
+export function extractRetryAfterMs(err: unknown): number | undefined {
+  if (typeof err === 'object' && err !== null) {
+    const candidate = err as {
+      retryAfterMs?: unknown;
+      retryAfterSeconds?: unknown;
+      headers?: { get?: (name: string) => string | null };
+      response?: { headers?: { get?: (name: string) => string | null } };
+      details?: unknown;
+    };
+
+    if (typeof candidate.retryAfterMs === 'number' && candidate.retryAfterMs > 0) {
+      return Math.min(600_000, Math.ceil(candidate.retryAfterMs));
+    }
+    if (typeof candidate.retryAfterSeconds === 'number' && candidate.retryAfterSeconds > 0) {
+      return Math.min(600_000, Math.ceil(candidate.retryAfterSeconds * 1000));
+    }
+
+    const headerVal =
+      candidate.headers?.get?.('retry-after') ??
+      candidate.response?.headers?.get?.('retry-after');
+    if (typeof headerVal === 'string' && headerVal.trim()) {
+      const numeric = Number(headerVal.trim());
+      if (Number.isFinite(numeric) && numeric > 0) {
+        return Math.min(600_000, Math.ceil(numeric * 1000));
+      }
+    }
+
+    if (Array.isArray(candidate.details)) {
+      for (const detail of candidate.details) {
+        if (typeof detail === 'object' && detail !== null) {
+          const retryDelay = (detail as { retryDelay?: unknown }).retryDelay;
+          if (typeof retryDelay === 'string') {
+            const m = retryDelay.trim().match(/^(\d+(?:\.\d+)?)\s*(ms|s)?$/i);
+            if (m) {
+              const parsed = parseDurationTokenToMs(Number(m[1]), m[2]);
+              if (parsed !== undefined) return parsed;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const rawMessage = err instanceof Error ? err.message : '';
+  if (rawMessage) {
+    const match = rawMessage.match(
+      /(?:retry\s*(?:in|after)|retryDelay["']?\s*[:=]\s*["']?)\s*(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds)?/i,
+    );
+    if (match) {
+      return parseDurationTokenToMs(Number(match[1]), match[2]);
+    }
+  }
+
+  return undefined;
+}
+
 export function isRetryableProviderError(err: unknown): boolean {
   if (err instanceof GeminiConfigError || err instanceof GeminiTimeoutError) {
     return false;
@@ -333,7 +468,10 @@ export function isRetryableProviderError(err: unknown): boolean {
   return false;
 }
 
-export function sanitizeProviderError(err: unknown): GeminiProviderError | GeminiTimeoutError {
+export function sanitizeProviderError(
+  err: unknown,
+  options?: { triedFallback?: boolean },
+): GeminiProviderError | GeminiTimeoutError {
   if (err instanceof GeminiTimeoutError) {
     return err;
   }
@@ -350,11 +488,24 @@ export function sanitizeProviderError(err: unknown): GeminiProviderError | Gemin
   }
 
   if (status === 429 || /RESOURCE_EXHAUSTED|rate\s*limit|quota/i.test(rawMessage)) {
-    return new GeminiProviderError(
-      'AI provider rate limit reached. Please wait a moment and try again.',
-      429,
-      'rate_limited',
-    );
+    const retryAfterMs = extractRetryAfterMs(err);
+    const retryAfterSeconds =
+      retryAfterMs !== undefined ? Math.max(1, Math.ceil(retryAfterMs / 1000)) : undefined;
+    const hardQuota = isHardQuotaExhaustionError(err);
+
+    let message: string;
+    if (options?.triedFallback || hardQuota) {
+      message =
+        retryAfterSeconds !== undefined && retryAfterSeconds <= 120 && !hardQuota
+          ? `AI provider rate limit reached across available models. Please wait about ${retryAfterSeconds} seconds and try again.`
+          : 'AI provider rate limit reached across available models. Please wait a minute and try again, or verify your Gemini API quota.';
+    } else if (retryAfterSeconds !== undefined && retryAfterSeconds <= 120) {
+      message = `AI provider rate limit reached. Please wait about ${retryAfterSeconds} seconds and try again.`;
+    } else {
+      message = 'AI provider rate limit reached. Please wait a moment and try again.';
+    }
+
+    return new GeminiProviderError(message, 429, 'rate_limited', retryAfterSeconds);
   }
 
   if (
@@ -489,6 +640,8 @@ export async function generateGeminiContent(
     attemptTimeoutMs?: number;
     maxRetries?: number;
     retryBaseDelayMs?: number;
+    useRateLimitCooldown?: boolean;
+    now?: () => number;
     clientFactory?: (apiKey: string) => GeminiClientLike;
     diagnostics?: GeminiDiagnosticContext;
   },
@@ -498,13 +651,15 @@ export async function generateGeminiContent(
     throw new GeminiConfigError();
   }
 
-  const startedAt = Date.now();
+  const nowFn = options?.now ?? Date.now;
+  const startedAt = nowFn();
   const timeoutMs = options?.timeoutMs ?? DEFAULT_AI_TIMEOUT_MS;
   const maxRetries = Math.max(0, options?.maxRetries ?? DEFAULT_AI_MAX_RETRIES);
   const retryBaseDelayMs = Math.max(
     0,
     options?.retryBaseDelayMs ?? DEFAULT_AI_RETRY_BASE_DELAY_MS,
   );
+  const useCooldown = options?.useRateLimitCooldown ?? true;
   const maxAttempts = maxRetries + 1;
   const clientFactory = options?.clientFactory ?? defaultClientFactory;
   const client = clientFactory(apiKey);
@@ -512,10 +667,22 @@ export async function generateGeminiContent(
   const deadline = startedAt + timeoutMs;
 
   let activeModel: AllowedGeminiModel = input.model;
+  let startedOnFallbackDueToCooldown = false;
+  if (
+    useCooldown &&
+    activeModel === DEFAULT_GEMINI_MODEL &&
+    getModelRateLimitCooldownRemainingMs(DEFAULT_GEMINI_MODEL, nowFn()) > 0
+  ) {
+    activeModel = FALLBACK_GEMINI_MODEL;
+    startedOnFallbackDueToCooldown = true;
+  }
+
+  let triedFallbackModel = activeModel === FALLBACK_GEMINI_MODEL;
+  let fallbackRateLimitRetries = 0;
   let lastMappedError: GeminiProviderError | GeminiTimeoutError | null = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const remainingMs = deadline - Date.now();
+    const remainingMs = deadline - nowFn();
     if (remainingMs <= 0) {
       throw new GeminiTimeoutError();
     }
@@ -584,41 +751,92 @@ export async function generateGeminiContent(
         );
       }
 
+      if (useCooldown && activeModel === DEFAULT_GEMINI_MODEL) {
+        modelRateLimitCooldownUntil.delete(DEFAULT_GEMINI_MODEL);
+      }
+
       return {
         text,
         model: activeModel,
-        generatedAt: new Date().toISOString(),
+        generatedAt: new Date(nowFn()).toISOString(),
       };
     } catch (err) {
       if (err instanceof GeminiConfigError) {
         throw err;
       }
 
-      const mapped = sanitizeProviderError(err);
+      const rateLimited = isRateLimitError(err);
+      const hardQuota = rateLimited && isHardQuotaExhaustionError(err);
+      const upstreamRetryAfterMs = rateLimited ? extractRetryAfterMs(err) : undefined;
+
+      if (rateLimited && useCooldown) {
+        markModelRateLimited(activeModel, upstreamRetryAfterMs, nowFn());
+      }
+
+      const mapped = sanitizeProviderError(err, {
+        triedFallback: triedFallbackModel || startedOnFallbackDueToCooldown,
+      });
       lastMappedError = mapped;
 
-      const retryDelayMs = perAttemptTimedOut
-        ? Math.min(retryBaseDelayMs, 250)
-        : retryBaseDelayMs * Math.pow(2, attempt - 1);
       const minBudgetNeeded = perAttemptTimedOut
         ? Math.min(MIN_FALLBACK_BUDGET_MS, Math.max(50, Math.floor(timeoutMs * 0.25)))
         : 50;
-      const hasBudgetForRetry = deadline - Date.now() > retryDelayMs + minBudgetNeeded;
 
-      const canRetry =
-        attempt < maxAttempts &&
-        hasBudgetForRetry &&
-        (isRetryableProviderError(err) || perAttemptTimedOut);
+      let canRetry = false;
+      let nextModel: AllowedGeminiModel = activeModel;
+      let retryDelayMs = 0;
 
-      // Switch to fast fallback model when primary model stalls past its per-attempt cap
-      // OR when entering the final retry attempt after consecutive overload/transient errors.
-      const shouldFallbackToLite =
-        canRetry &&
-        activeModel === 'gemini-4-hydrogen' &&
-        (perAttemptTimedOut || attempt === maxAttempts - 1);
-      const nextModel: AllowedGeminiModel = shouldFallbackToLite
-        ? FALLBACK_GEMINI_MODEL
-        : activeModel;
+      if (rateLimited) {
+        if (activeModel === DEFAULT_GEMINI_MODEL) {
+          // Immediately fall back to gemini-3.1-flash-lite (independent model quota bucket)
+          // instead of hammering the rate-limited primary model.
+          retryDelayMs = Math.min(retryBaseDelayMs, 200);
+          const hasBudgetForFallback = deadline - nowFn() > retryDelayMs + minBudgetNeeded;
+          if (attempt < maxAttempts && hasBudgetForFallback) {
+            canRetry = true;
+            nextModel = FALLBACK_GEMINI_MODEL;
+            triedFallbackModel = true;
+          }
+        } else if (
+          !hardQuota &&
+          fallbackRateLimitRetries < 1 &&
+          attempt < maxAttempts &&
+          (upstreamRetryAfterMs === undefined ||
+            upstreamRetryAfterMs <= MAX_INLINE_RATE_LIMIT_WAIT_MS)
+        ) {
+          // Allow at most one bounded polite retry on the fallback model for brief RPM bursts.
+          retryDelayMs =
+            upstreamRetryAfterMs !== undefined
+              ? Math.min(upstreamRetryAfterMs, MAX_INLINE_RATE_LIMIT_WAIT_MS)
+              : Math.min(Math.max(retryBaseDelayMs * 2, retryBaseDelayMs), 3_000);
+          const hasBudgetForRetry = deadline - nowFn() > retryDelayMs + minBudgetNeeded;
+          if (hasBudgetForRetry) {
+            canRetry = true;
+            nextModel = FALLBACK_GEMINI_MODEL;
+            fallbackRateLimitRetries += 1;
+          }
+        }
+      } else {
+        retryDelayMs = perAttemptTimedOut
+          ? Math.min(retryBaseDelayMs, 250)
+          : retryBaseDelayMs * Math.pow(2, attempt - 1);
+        const hasBudgetForRetry = deadline - nowFn() > retryDelayMs + minBudgetNeeded;
+        canRetry =
+          attempt < maxAttempts &&
+          hasBudgetForRetry &&
+          (isRetryableProviderError(err) || perAttemptTimedOut);
+
+        // Switch to fast fallback model when primary model stalls past its per-attempt cap
+        // OR when entering the final retry attempt after consecutive overload/transient errors.
+        const shouldFallbackToLite =
+          canRetry &&
+          activeModel === 'gemini-4-hydrogen' &&
+          (perAttemptTimedOut || attempt === maxAttempts - 1);
+        if (shouldFallbackToLite) {
+          nextModel = FALLBACK_GEMINI_MODEL;
+          triedFallbackModel = true;
+        }
+      }
 
       logSanitizedGeminiFailure({
         model: activeModel,
@@ -627,7 +845,7 @@ export async function generateGeminiContent(
         err,
         mappedStatus: mapped.statusCode,
         errorCategory: mapped.errorCategory,
-        elapsedMs: Math.max(0, Date.now() - startedAt),
+        elapsedMs: Math.max(0, nowFn() - startedAt),
         willRetry: canRetry,
         nextModel,
         diagnostics: options?.diagnostics,

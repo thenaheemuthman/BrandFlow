@@ -52,6 +52,13 @@ import {
   optimizeContentCalendarPromptVariables,
   projectCalendarSupplementalModule,
 } from './calendarContextBudget.ts';
+import {
+  CONTENT_STUDIO_PROMPT_IDS,
+  CONTENT_STUDIO_PROMPT_TARGET_BUDGET,
+  isContentStudioPromptId,
+  optimizeContentStudioPromptVariables,
+  projectStudioSupplementalModule,
+} from './studioContextBudget.ts';
 
 export {
   MARKETING_STRATEGY_PROMPT_TARGET_BUDGET,
@@ -88,6 +95,14 @@ export {
   projectCalendarSupplementalModule,
   type ContentCalendarPromptId,
 } from './calendarContextBudget.ts';
+export {
+  CONTENT_STUDIO_PROMPT_IDS,
+  CONTENT_STUDIO_PROMPT_TARGET_BUDGET,
+  isContentStudioPromptId,
+  optimizeContentStudioPromptVariables,
+  projectStudioSupplementalModule,
+  type ContentStudioPromptId,
+} from './studioContextBudget.ts';
 
 export const ENGINE_MAX_PROMPT_LENGTH = 12_000;
 export const ENGINE_MAX_CONTEXT_LENGTH = 24_000;
@@ -622,6 +637,9 @@ export function buildPromptVariableMap(
       'approvedContentSeries',
       'approvedContentDistribution',
       'approvedContentGovernance',
+      'studioBrandContext',
+      'studioAudienceContext',
+      'studioStrategyContext',
     ]);
 
     for (const [key, rawValue] of Object.entries(extraVariables)) {
@@ -815,6 +833,28 @@ const MARKETING_STRATEGY_SUPPLEMENTAL_FACT_EXCLUSIONS: Record<string, ReadonlySe
     'businessGoals',
     'marketingChallenges',
   ]),
+  content_studio_generate_asset: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+    'businessDescription',
+    'businessGoals',
+    'marketingChallenges',
+    'additionalNotes',
+  ]),
+  content_studio_refine_asset: new Set([
+    'existingMission',
+    'existingVision',
+    'websiteUrl',
+    'socialLinks',
+    'competitors',
+    'businessDescription',
+    'businessGoals',
+    'marketingChallenges',
+    'additionalNotes',
+  ]),
 };
 
 export function buildApprovedContextPayload(
@@ -912,6 +952,11 @@ export function buildApprovedContextPayload(
       if (projected) {
         supplementalModules[moduleKey] = projected;
       }
+    } else if (isContentStudioPromptId(promptId)) {
+      const projected = projectStudioSupplementalModule(moduleKey, mod.content);
+      if (projected) {
+        supplementalModules[moduleKey] = projected;
+      }
     } else {
       supplementalModules[moduleKey] = mod;
     }
@@ -983,7 +1028,7 @@ export function compilePromptTemplate(
         marketingOptimizedVariables,
       )
     : marketingOptimizedVariables;
-  const finalResolvedVariables = isContentCalendarPromptId(definition.promptId)
+  const calendarOptimizedVariables = isContentCalendarPromptId(definition.promptId)
     ? optimizeContentCalendarPromptVariables(
         definition,
         verifiedContext,
@@ -991,6 +1036,14 @@ export function compilePromptTemplate(
         contentOptimizedVariables,
       )
     : contentOptimizedVariables;
+  const finalResolvedVariables = isContentStudioPromptId(definition.promptId)
+    ? optimizeContentStudioPromptVariables(
+        definition,
+        verifiedContext,
+        compiledSystemInstructions,
+        calendarOptimizedVariables,
+      )
+    : calendarOptimizedVariables;
 
   const { compiledUserPrompt, combinedPromptText } = renderPromptWithVariables(
     definition,

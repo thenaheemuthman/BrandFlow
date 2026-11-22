@@ -25,6 +25,7 @@ import type {
   ContentCalendarSettings,
   ContentCalendarStatus,
   ContentCalendarWithItems,
+  ContentStudioHandoffPayload,
   CreateContentCalendarItemInput,
   UpdateContentCalendarItemInput,
   WorkspaceSection,
@@ -63,6 +64,7 @@ interface ContentCalendarViewProps {
   onCalendarChanged: () => void | Promise<void>;
   onToast: (type: 'success' | 'error', message: string) => void;
   onNavigateToSection: (section: WorkspaceSection) => void;
+  onOpenInContentStudio?: (payload: ContentStudioHandoffPayload) => void;
 }
 
 function classifyClientError(err: unknown): {
@@ -100,6 +102,7 @@ export function ContentCalendarView({
   onCalendarChanged,
   onToast,
   onNavigateToSection,
+  onOpenInContentStudio,
 }: ContentCalendarViewProps) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1230,6 +1233,7 @@ export function ContentCalendarView({
           onSaveUpdate={handleSaveUpdateItem}
           onDuplicate={handleDuplicateItem}
           onDelete={(item) => setItemToDelete(item)}
+          onOpenInContentStudio={onOpenInContentStudio}
           onClose={() => setDrawerState({ open: false })}
         />
       )}

@@ -413,4 +413,281 @@ create policy "content_calendar_items_delete_own"
     )
   );
 
+-- ============================================================================
+-- PHASE 2B: CONTENT STUDIO (content_assets & content_asset_versions)
+-- ============================================================================
+
+create table if not exists public.content_assets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  brand_id uuid not null references public.brands (id) on delete cascade,
+  calendar_id uuid references public.content_calendars (id) on delete set null,
+  calendar_item_id uuid references public.content_calendar_items (id) on delete set null,
+  title text not null,
+  platform text not null,
+  format_category text not null default 'social_post' check (
+    format_category in (
+      'social_post',
+      'educational_post',
+      'promotional_post',
+      'story_post',
+      'short_video_script',
+      'carousel',
+      'long_form_article',
+      'platform_adaptation'
+    )
+  ),
+  format_label text not null default '',
+  content_pillar text not null default '',
+  content_theme text not null default '',
+  target_audience text not null default '',
+  content_objective text not null default '',
+  tone_of_voice text not null default '',
+  content_length text not null default 'medium' check (
+    content_length in ('short', 'medium', 'long')
+  ),
+  scheduled_date date,
+  workflow_status text not null default 'draft' check (
+    workflow_status in (
+      'draft',
+      'in_progress',
+      'ready_for_review',
+      'approved',
+      'published',
+      'archived'
+    )
+  ),
+  source text not null default 'ai_generated' check (
+    source in ('ai_generated', 'edited_ai', 'manual')
+  ),
+  current_version_number integer not null default 1 check (current_version_number >= 1),
+  approved_version_number integer,
+  approved_at timestamptz,
+  published_at timestamptz,
+  body jsonb not null default '{}'::jsonb,
+  generation_options jsonb not null default '{}'::jsonb,
+  handoff_snapshot jsonb,
+  prompt_id text,
+  prompt_version text,
+  model text,
+  generated_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_content_assets_brand_updated
+  on public.content_assets (brand_id, updated_at desc);
+
+create index if not exists idx_content_assets_user_brand_status
+  on public.content_assets (user_id, brand_id, workflow_status);
+
+create index if not exists idx_content_assets_calendar_item
+  on public.content_assets (brand_id, calendar_item_id)
+  where calendar_item_id is not null;
+
+create index if not exists idx_content_assets_brand_platform_format
+  on public.content_assets (brand_id, platform, format_category);
+
+create table if not exists public.content_asset_versions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  brand_id uuid not null references public.brands (id) on delete cascade,
+  asset_id uuid not null references public.content_assets (id) on delete cascade,
+  version_number integer not null check (version_number >= 1),
+  title text not null default '',
+  body jsonb not null default '{}'::jsonb,
+  change_summary text not null default '',
+  action_type text not null default 'initial',
+  source text not null default 'ai_generated' check (
+    source in ('ai_generated', 'edited_ai', 'manual')
+  ),
+  prompt_id text,
+  prompt_version text,
+  model text,
+  created_at timestamptz not null default now(),
+  unique (asset_id, version_number)
+);
+
+create index if not exists idx_content_asset_versions_asset_ver
+  on public.content_asset_versions (asset_id, version_number desc);
+
+create index if not exists idx_content_asset_versions_user_brand
+  on public.content_asset_versions (user_id, brand_id);
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.updated_at = pg_catalog.now();
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_content_assets_updated_at on public.content_assets;
+create trigger trg_content_assets_updated_at
+  before update on public.content_assets
+  for each row execute function public.set_updated_at();
+
+create or replace function public.validate_content_asset_calendar_link()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if new.calendar_id is not null and new.calendar_item_id is not null then
+    if not exists (
+      select 1
+      from public.content_calendar_items ci
+      where ci.id = new.calendar_item_id
+        and ci.calendar_id = new.calendar_id
+        and ci.brand_id = new.brand_id
+        and ci.user_id = new.user_id
+    ) then
+      raise exception 'Content asset calendar_item_id (%) does not belong to calendar_id (%) for brand (%)',
+        new.calendar_item_id, new.calendar_id, new.brand_id
+        using errcode = '23514';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_content_assets_validate_calendar_link on public.content_assets;
+create trigger trg_content_assets_validate_calendar_link
+  before insert or update of calendar_id, calendar_item_id, brand_id, user_id
+  on public.content_assets
+  for each row execute function public.validate_content_asset_calendar_link();
+
+alter table public.content_assets enable row level security;
+alter table public.content_asset_versions enable row level security;
+
+revoke all on public.content_assets from anon;
+revoke all on public.content_asset_versions from anon;
+
+grant select, insert, update, delete on public.content_assets to authenticated;
+revoke update, delete on public.content_asset_versions from authenticated;
+grant select, insert on public.content_asset_versions to authenticated;
+
+drop policy if exists "content_assets_select_own" on public.content_assets;
+create policy "content_assets_select_own"
+  on public.content_assets for select to authenticated
+  using (
+    user_id = auth.uid()
+    and exists (
+      select 1 from public.brands b
+      where b.id = brand_id and b.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "content_assets_insert_own" on public.content_assets;
+create policy "content_assets_insert_own"
+  on public.content_assets for insert to authenticated
+  with check (
+    user_id = auth.uid()
+    and exists (
+      select 1 from public.brands b
+      where b.id = brand_id and b.user_id = auth.uid()
+    )
+    and (
+      calendar_id is null
+      or exists (
+        select 1 from public.content_calendars c
+        where c.id = calendar_id
+          and c.brand_id = brand_id
+          and c.user_id = auth.uid()
+      )
+    )
+    and (
+      calendar_item_id is null
+      or exists (
+        select 1 from public.content_calendar_items ci
+        where ci.id = calendar_item_id
+          and ci.brand_id = brand_id
+          and ci.user_id = auth.uid()
+          and (calendar_id is null or ci.calendar_id = calendar_id)
+      )
+    )
+  );
+
+drop policy if exists "content_assets_update_own" on public.content_assets;
+create policy "content_assets_update_own"
+  on public.content_assets for update to authenticated
+  using (
+    user_id = auth.uid()
+    and exists (
+      select 1 from public.brands b
+      where b.id = brand_id and b.user_id = auth.uid()
+    )
+  )
+  with check (
+    user_id = auth.uid()
+    and exists (
+      select 1 from public.brands b
+      where b.id = brand_id and b.user_id = auth.uid()
+    )
+    and (
+      calendar_id is null
+      or exists (
+        select 1 from public.content_calendars c
+        where c.id = calendar_id
+          and c.brand_id = brand_id
+          and c.user_id = auth.uid()
+      )
+    )
+    and (
+      calendar_item_id is null
+      or exists (
+        select 1 from public.content_calendar_items ci
+        where ci.id = calendar_item_id
+          and ci.brand_id = brand_id
+          and ci.user_id = auth.uid()
+          and (calendar_id is null or ci.calendar_id = calendar_id)
+      )
+    )
+  );
+
+drop policy if exists "content_assets_delete_own" on public.content_assets;
+create policy "content_assets_delete_own"
+  on public.content_assets for delete to authenticated
+  using (
+    user_id = auth.uid()
+    and exists (
+      select 1 from public.brands b
+      where b.id = brand_id and b.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "content_asset_versions_select_own" on public.content_asset_versions;
+create policy "content_asset_versions_select_own"
+  on public.content_asset_versions for select to authenticated
+  using (
+    user_id = auth.uid()
+    and exists (
+      select 1 from public.content_assets a
+      where a.id = asset_id
+        and a.brand_id = brand_id
+        and a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "content_asset_versions_insert_own" on public.content_asset_versions;
+create policy "content_asset_versions_insert_own"
+  on public.content_asset_versions for insert to authenticated
+  with check (
+    user_id = auth.uid()
+    and exists (
+      select 1 from public.content_assets a
+      where a.id = asset_id
+        and a.brand_id = brand_id
+        and a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "content_asset_versions_update_own" on public.content_asset_versions;
+drop policy if exists "content_asset_versions_delete_own" on public.content_asset_versions;
+
+
 

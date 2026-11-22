@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import {
   ArrowRight,
   CalendarDays,
@@ -21,6 +22,7 @@ import type {
   Brand,
   BrandFormInput,
   BrandStrategyModule,
+  ContentStudioHandoffPayload,
   WorkspaceSection,
 } from '../../types/brand';
 import type { AppRoute } from '../../utils/router';
@@ -31,7 +33,6 @@ import {
   formatModuleStatusLabel,
   formatShortDate,
 } from '../../utils/brandLogic';
-import { UpcomingModuleState } from '../common/UpcomingModuleState';
 import { BrandFormView } from '../brands/BrandFormView';
 import { BrandFoundationView } from './BrandFoundationView';
 import { BrandMessagingView } from './BrandMessagingView';
@@ -39,6 +40,7 @@ import { CustomerIntelligenceView } from './CustomerIntelligenceView';
 import { MarketingStrategyView } from './MarketingStrategyView';
 import { ContentStrategyView } from './ContentStrategyView';
 import { ContentCalendarView } from './ContentCalendarView';
+import { ContentStudioView } from './ContentStudioView';
 
 interface BrandWorkspaceViewProps {
   brand: Brand;
@@ -72,94 +74,6 @@ const WORKSPACE_NAV: Array<{
   { id: 'brand-settings', label: 'Brand Settings', icon: Settings },
 ];
 
-const UPCOMING_MODULE_COPY: Record<
-  Exclude<WorkspaceSection, 'overview' | 'brand-settings'>,
-  {
-    title: string;
-    icon: typeof Compass;
-    description: string;
-    capabilities: string[];
-  }
-> = {
-  'brand-foundation': {
-    title: 'Brand Foundation',
-    icon: Compass,
-    description:
-      'Establish the core strategic identity of this brand based on the business profile captured in Phase 1.',
-    capabilities: [
-      'Structured brand purpose, mission, and vision refinement',
-      'Core brand values and differentiation attributes',
-      'Market positioning statement aligned with competitive context',
-    ],
-  },
-  'brand-messaging': {
-    title: 'Brand Messaging',
-    icon: MessageSquareText,
-    description:
-      'Translate foundational positioning into consistent messaging frameworks across channels.',
-    capabilities: [
-      'Core value proposition hierarchy and proof points',
-      'Brand voice, tone guardrails, and vocabulary standards',
-      'Audience-specific messaging angles and objection handling',
-    ],
-  },
-  'customer-intelligence': {
-    title: 'Customer Intelligence',
-    icon: Users,
-    description:
-      'Organize buyer research, ideal customer profiles, and decision-making triggers for this brand.',
-    capabilities: [
-      'Ideal Customer Profile (ICP) segmentation and firmographics',
-      'Detailed buyer personas with goals, frustrations, and triggers',
-      'Buyer journey mapping from awareness to conversion',
-    ],
-  },
-  'marketing-strategy': {
-    title: 'Marketing Strategy',
-    icon: Target,
-    description:
-      'Define measurable marketing objectives, priority channels, and campaign focus areas.',
-    capabilities: [
-      'SMART marketing goals linked directly to business objectives',
-      'Channel prioritization matrix and funnel stage allocation',
-      'Quarterly campaign themes and conversion hypotheses',
-    ],
-  },
-  'content-strategy': {
-    title: 'Content Strategy',
-    icon: Layers,
-    description:
-      'Build a repeatable editorial architecture connecting brand messaging to audience needs.',
-    capabilities: [
-      'Core content pillars and strategic topic clusters',
-      'Format mix and channel-specific publishing cadence',
-      'Content governance and quality benchmarks',
-    ],
-  },
-  'content-calendar': {
-    title: 'Content Calendar',
-    icon: CalendarDays,
-    description:
-      'Plan and coordinate a structured 30-day publishing schedule mapped to your content pillars.',
-    capabilities: [
-      '30-day calendar planning board across active channels',
-      'Topic assignments tied to funnel stages and campaigns',
-      'Draft-to-approval status tracking per scheduled slot',
-    ],
-  },
-  'content-studio': {
-    title: 'Content Studio',
-    icon: PenTool,
-    description:
-      'Produce, review, and refine marketing content anchored in this brand’s strategy and writing style.',
-    capabilities: [
-      'Channel-ready long-form and social content production',
-      'Writing style enforcement and revision workflows',
-      'Editorial approval queue and asset export',
-    ],
-  },
-};
-
 export function BrandWorkspaceView({
   brand,
   activities,
@@ -176,6 +90,21 @@ export function BrandWorkspaceView({
   onDirtyChange,
 }: BrandWorkspaceViewProps) {
   const progress = computeBrandProgress(brand);
+  const [pendingStudioHandoff, setPendingStudioHandoff] =
+    useState<ContentStudioHandoffPayload | null>(null);
+
+  // Strict brand isolation: discard any queued handoff payload if the active brand switches.
+  useEffect(() => {
+    setPendingStudioHandoff(null);
+  }, [brand.id]);
+
+  const handleOpenInContentStudio = (payload: ContentStudioHandoffPayload) => {
+    if (payload.brandId !== brand.id) {
+      return;
+    }
+    setPendingStudioHandoff(payload);
+    onSelectSection('content-studio');
+  };
 
   return (
     <div className="space-y-6">
@@ -437,7 +366,7 @@ export function BrandWorkspaceView({
                     {progress.calendarStatusLabel}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
-                    30-day planner opens in Phase 2
+                    30-day publishing calendar &amp; studio handoff
                   </p>
                 </div>
               </div>
@@ -606,25 +535,19 @@ export function BrandWorkspaceView({
               onCalendarChanged={() => onWorkspaceRefresh?.()}
               onToast={onToast}
               onNavigateToSection={onSelectSection}
+              onOpenInContentStudio={handleOpenInContentStudio}
             />
           )}
 
-          {section !== 'overview' &&
-            section !== 'brand-settings' &&
-            section !== 'brand-foundation' &&
-            section !== 'brand-messaging' &&
-            section !== 'customer-intelligence' &&
-            section !== 'marketing-strategy' &&
-            section !== 'content-strategy' &&
-            section !== 'content-calendar' && (
-            <UpcomingModuleState
-              icon={UPCOMING_MODULE_COPY[section].icon}
-              title={UPCOMING_MODULE_COPY[section].title}
-              phaseLabel="Upcoming Module — Planned for Phase 2"
-              description={UPCOMING_MODULE_COPY[section].description}
-              plannedCapabilities={UPCOMING_MODULE_COPY[section].capabilities}
-              primaryActionLabel="Back to Workspace Overview"
-              onPrimaryAction={() => onSelectSection('overview')}
+          {section === 'content-studio' && (
+            <ContentStudioView
+              key={brand.id}
+              brand={brand}
+              initialHandoff={pendingStudioHandoff}
+              onClearHandoff={() => setPendingStudioHandoff(null)}
+              onStudioChanged={() => onWorkspaceRefresh?.()}
+              onToast={onToast}
+              onNavigateToSection={onSelectSection}
             />
           )}
 

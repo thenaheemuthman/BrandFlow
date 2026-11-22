@@ -26,17 +26,19 @@ export class ClassifiedAiError extends Error {
   readonly errorCategory: AiErrorCategory;
   readonly status?: number;
   readonly requestId?: string;
+  readonly retryAfterSeconds?: number;
 
   constructor(
     message: string,
     errorCategory: AiErrorCategory,
-    options?: { status?: number; requestId?: string },
+    options?: { status?: number; requestId?: string; retryAfterSeconds?: number },
   ) {
     super(message);
     this.name = 'ClassifiedAiError';
     this.errorCategory = errorCategory;
     this.status = options?.status;
     this.requestId = options?.requestId;
+    this.retryAfterSeconds = options?.retryAfterSeconds;
   }
 }
 
@@ -155,6 +157,13 @@ export function parsePromptExecutionResponse(
       ? parsed.requestId.trim()
       : undefined;
 
+  const retryAfterSeconds =
+    typeof parsed.retryAfterSeconds === 'number' &&
+    Number.isFinite(parsed.retryAfterSeconds) &&
+    parsed.retryAfterSeconds > 0
+      ? Math.ceil(parsed.retryAfterSeconds)
+      : undefined;
+
   const message =
     typeof parsed.error === 'string' && parsed.error.trim()
       ? parsed.error.trim()
@@ -163,5 +172,5 @@ export function parsePromptExecutionResponse(
         : `Request failed with status ${status}.`;
 
   const category = inferErrorCategory(status, parsed, message);
-  throw new ClassifiedAiError(message, category, { status, requestId });
+  throw new ClassifiedAiError(message, category, { status, requestId, retryAfterSeconds });
 }

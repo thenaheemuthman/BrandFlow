@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
-import { Copy, PenTool, Trash2, X } from 'lucide-react';
+import { ArrowRight, Copy, PenTool, Trash2, X } from 'lucide-react';
 import type {
   Brand,
   CalendarWorkflowStatus,
   ContentCalendar,
   ContentCalendarItem,
+  ContentStudioHandoffPayload,
   CreateContentCalendarItemInput,
   UpdateContentCalendarItemInput,
 } from '../../types/brand';
@@ -27,6 +28,7 @@ interface ContentCalendarItemDrawerProps {
   onSaveUpdate: (itemId: string, patch: UpdateContentCalendarItemInput) => Promise<void>;
   onDuplicate?: (item: ContentCalendarItem) => Promise<void>;
   onDelete?: (item: ContentCalendarItem) => void;
+  onOpenInContentStudio?: (payload: ContentStudioHandoffPayload) => void;
   onClose: () => void;
 }
 
@@ -42,6 +44,7 @@ export function ContentCalendarItemDrawer({
   onSaveUpdate,
   onDuplicate,
   onDelete,
+  onOpenInContentStudio,
   onClose,
 }: ContentCalendarItemDrawerProps) {
   const allowedPlatforms = useMemo(() => {
@@ -495,27 +498,42 @@ export function ContentCalendarItemDrawer({
             </div>
           </div>
 
-          {/* Future Content Studio Integration Boundary (Read-Only Handoff Preview) */}
+          {/* Content Studio Handoff */}
           {mode === 'edit' && handoffPayload && (
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <div className="rounded-lg border border-indigo-200/80 bg-indigo-50/40 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <PenTool className="h-4 w-4 text-indigo-600" strokeWidth={1.75} />
                   <span className="text-sm font-semibold text-slate-900">
-                    Content Studio Handoff Ready
+                    Content Studio Handoff
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setShowStudioHandoff((v) => !v)}
-                  className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
-                >
-                  {showStudioHandoff ? 'Hide handoff metadata' : 'Inspect handoff brief'}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowStudioHandoff((v) => !v)}
+                    className="text-xs font-medium text-slate-600 hover:text-slate-900"
+                  >
+                    {showStudioHandoff ? 'Hide metadata' : 'Inspect metadata'}
+                  </button>
+                  {onOpenInContentStudio && (
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => {
+                        onOpenInContentStudio(handoffPayload);
+                        onClose();
+                      }}
+                      className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <span>Create in Content Studio</span>
+                      <ArrowRight className="h-3.5 w-3.5" strokeWidth={1.75} />
+                    </button>
+                  )}
+                </div>
               </div>
-              <p className="mt-1 text-xs text-slate-600">
-                This entry holds stable Brand, Calendar, and Slot identifiers for future one-click
-                draft generation in Content Studio (next module).
+              <p className="mt-1.5 text-xs text-slate-600">
+                Carry this entry&apos;s brief, platform, pillar, objective, and identifiers directly into Content Studio for structured drafting and review.
               </p>
               {showStudioHandoff && (
                 <div className="mt-3 rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-700 space-y-1 font-mono">

@@ -8,6 +8,10 @@ import {
   optimizeContentCalendarPromptVariables,
 } from './calendarContextBudget.ts';
 import {
+  CONTENT_STUDIO_PROMPT_TARGET_BUDGET,
+  optimizeContentStudioPromptVariables,
+} from './studioContextBudget.ts';
+import {
   BrandContextIsolationError,
   DEFAULT_PROMPT_DEFINITIONS,
   DEFAULT_PROMPT_REGISTRY,
@@ -168,7 +172,7 @@ test('default registry registers original slots safely as draft and reconstructe
   }
 
   const reconstructed = listPrompts({ sourceClassification: 'reconstructed' });
-  assert.equal(reconstructed.length, 15);
+  assert.equal(reconstructed.length, 17);
   for (const item of reconstructed) {
     assert.equal(item.status, 'active');
   }
@@ -185,6 +189,8 @@ test('default registry registers original slots safely as draft and reconstructe
   assert.equal(promptIds.includes('content_strategy_distribution'), true);
   assert.equal(promptIds.includes('content_strategy_governance'), true);
   assert.equal(promptIds.includes('content_calendar_weekly_batch'), true);
+  assert.equal(promptIds.includes('content_studio_generate_asset'), true);
+  assert.equal(promptIds.includes('content_studio_refine_asset'), true);
 });
 
 test('registry rejects duplicate versions, multiple active versions, missing-original active status, and undeclared template vars', () => {
@@ -2713,6 +2719,258 @@ test('Phase 2B Content Calendar weekly batch prompt compiles within strict budge
       });
       assert.equal(execResult.status, 'success');
       assert.equal(execResult.targetModule, 'contentCalendar');
+    }
+  }
+});
+
+test('Phase 2B Content Studio prompts (generate & refine) stay under 9500 target / 12000 hard limit across realistic, heavy, and extreme fixtures with anti-spoofing and structured execution', async () => {
+  assert.equal(ENGINE_MAX_PROMPT_LENGTH, 12_000);
+  assert.equal(ENGINE_MAX_CONTEXT_LENGTH, 24_000);
+  assert.equal(CONTENT_STUDIO_PROMPT_TARGET_BUDGET, 9_500);
+
+  const now = '2026-11-21T00:00:00.000Z';
+
+  for (const scale of ['realistic', 'heavy', 'extreme'] as const) {
+    const { brand, modules: strategyModules } = buildMarketingBudgetFixture(scale);
+    const repeatFactor = scale === 'realistic' ? 1 : scale === 'heavy' ? 4 : 12;
+
+    const contentStrategyModule = makeStrategyModule({
+      id: `mod-cs-studio-${scale}`,
+      brandId: brand.id,
+      userId: brand.userId,
+      moduleKey: 'contentStrategy',
+      status: 'completed',
+      content: {
+        brandId: brand.id,
+        objectives: [
+          {
+            id: 'co-1',
+            title: 'Establish Proof-Led Positioning Authority',
+            approved: true,
+          },
+          {
+            id: 'co-unapproved',
+            title: 'UNAPPROVED_STUDIO_OBJ_DO_NOT_LEAK',
+            approved: false,
+          },
+        ],
+        pillars: Array.from({ length: 6 }, (_, idx) => ({
+          id: `p-${idx + 1}`,
+          name: `Approved Pillar ${idx + 1}: Positioning & Demand Systems`,
+          description: `Core pillar detail ${idx + 1}. `.repeat(repeatFactor),
+          approved: true,
+        })),
+        distributionChannels: [
+          { id: 'd-1', channelName: 'LinkedIn', publishingFrequency: '3x/week', approved: true },
+          { id: 'd-unapproved', channelName: 'UNAPPROVED_STUDIO_DIST_DO_NOT_LEAK', approved: false },
+        ],
+        governance: {
+          qualityStandards: ['Never fabricate statistics', 'Maintain executive clarity'],
+          brandConsistencyRules: ['Lead with verified frameworks'],
+          approved: true,
+        },
+      },
+    });
+
+    const verified = buildVerifiedBrandContext({
+      expectedBrandId: brand.id,
+      expectedOwnerUserId: brand.userId,
+      brand,
+      strategyModules: [...strategyModules, contentStrategyModule],
+    });
+
+    const calendarBrief = {
+      title: '5-Slide B2B Positioning Diagnostic',
+      scheduledDate: '2026-12-03',
+      platform: 'LinkedIn',
+      contentPillar: 'Approved Pillar 1: Positioning & Demand Systems',
+      contentTheme: 'Teardown Frameworks',
+      contentFormat: 'LinkedIn Carousel',
+      targetAudience: 'Approved Persona 1: Growth-Stage B2B Founder',
+      audiencePainPoint: 'Unpredictable referral pipeline and blended messaging',
+      contentObjective: 'Establish Proof-Led Positioning Authority',
+      coreMessage: 'Clarify positioning before increasing publishing volume. '.repeat(repeatFactor),
+      suggestedAngle: '5-minute executive diagnostic',
+      intendedCta: 'Comment AUDIT for the scorecard',
+      productionNotes: 'Keep every slide scannable and concrete. '.repeat(repeatFactor),
+    };
+
+    const generateVars: Record<string, unknown> = {
+      studioGenerationOptions: JSON.stringify({
+        platform: 'LinkedIn',
+        formatCategory: 'carousel',
+        formatLabel: 'LinkedIn Carousel',
+        toneOfVoice: 'Direct, analytical, founder-practical',
+        contentLength: 'medium',
+        primaryObjective: 'Establish Proof-Led Positioning Authority',
+        targetAudience: 'Approved Persona 1: Growth-Stage B2B Founder',
+        ctaPreference: 'Comment AUDIT for the scorecard',
+        platformGuidance: 'Slide 1 cover hook, Slides 2-5 concise takeaways, Slide 6 CTA.',
+        additionalInstructions: 'Highlight verified positioning steps without fluff. '.repeat(repeatFactor),
+      }),
+      studioCalendarBrief: JSON.stringify(calendarBrief),
+      // Spoofing attempts must be overwritten by server-verified brand/audience/strategy summaries
+      studioBrandContext: 'SPOOFED_STUDIO_BRAND_CONTEXT',
+      studioAudienceContext: 'SPOOFED_STUDIO_AUDIENCE_CONTEXT',
+      studioStrategyContext: 'SPOOFED_STUDIO_STRATEGY_CONTEXT',
+    };
+
+    const genDef = resolveExecutablePrompt('content_studio_generate_asset');
+    const genCompiled = compilePromptTemplate(genDef, verified, generateVars);
+    const genCtxStr = JSON.stringify(genCompiled.contextPayload);
+
+    assert.ok(
+      genCompiled.combinedPromptText.length <= CONTENT_STUDIO_PROMPT_TARGET_BUDGET,
+      `Studio generate (${scale}) prompt (${genCompiled.combinedPromptText.length}) must be <= ${CONTENT_STUDIO_PROMPT_TARGET_BUDGET}`,
+    );
+    assert.ok(genCompiled.combinedPromptText.length < ENGINE_MAX_PROMPT_LENGTH);
+    assert.ok(genCtxStr.length < ENGINE_MAX_CONTEXT_LENGTH);
+
+    // Determinism & valid JSON variable check
+    const genBaseVars = buildPromptVariableMap(verified, generateVars);
+    const genOptVars = optimizeContentStudioPromptVariables(
+      genDef,
+      verified,
+      genCompiled.compiledSystemInstructions,
+      genBaseVars,
+    );
+    for (const [k, v] of Object.entries(genOptVars)) {
+      const trimmed = v.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        assert.doesNotThrow(() => JSON.parse(trimmed), `Studio generate (${scale}) var ${k} must be valid JSON`);
+      }
+    }
+
+    // Refine prompt test with large existing draft
+    const refineVars: Record<string, unknown> = {
+      ...generateVars,
+      refinementAction: 'improve_clarity',
+      targetTone: 'Sharper executive authority',
+      refinementInstructions: 'Tighten slide headlines and strengthen Slide 1 hook. '.repeat(repeatFactor),
+      selectedSectionText: 'Most B2B firms struggle to articulate differentiation. '.repeat(repeatFactor),
+      existingDraft: JSON.stringify({
+        title: '5-Slide B2B Positioning Diagnostic',
+        hook: 'Most B2B firms do not have a posting problem. They have a positioning problem.',
+        mainCopy: 'Before increasing publishing cadence, verify that buyers immediately understand your value. '.repeat(
+          repeatFactor * 3,
+        ),
+        cta: 'Comment AUDIT for the scorecard.',
+        hashtags: ['#B2BStrategy', '#BrandPositioning'],
+        carouselSlides: Array.from({ length: 6 }, (_, i) => ({
+          slideNumber: i + 1,
+          headline: `Slide ${i + 1}: Positioning Step`,
+          body: 'Concrete positioning lesson for B2B founders. '.repeat(repeatFactor),
+          visualCue: 'Clean typographic slide',
+        })),
+      }),
+    };
+
+    const refineDef = resolveExecutablePrompt('content_studio_refine_asset');
+    const refineCompiled = compilePromptTemplate(refineDef, verified, refineVars);
+    const refineCtxStr = JSON.stringify(refineCompiled.contextPayload);
+
+    assert.ok(
+      refineCompiled.combinedPromptText.length <= CONTENT_STUDIO_PROMPT_TARGET_BUDGET,
+      `Studio refine (${scale}) prompt (${refineCompiled.combinedPromptText.length}) must be <= ${CONTENT_STUDIO_PROMPT_TARGET_BUDGET}`,
+    );
+    assert.ok(refineCompiled.combinedPromptText.length < ENGINE_MAX_PROMPT_LENGTH);
+    assert.ok(refineCtxStr.length < ENGINE_MAX_CONTEXT_LENGTH);
+
+    // Zero unapproved leakage and zero spoofing across both prompts
+    for (const forbidden of [
+      'UNAPPROVED_STUDIO_OBJ_DO_NOT_LEAK',
+      'UNAPPROVED_STUDIO_DIST_DO_NOT_LEAK',
+      'SPOOFED_STUDIO_BRAND_CONTEXT',
+      'SPOOFED_STUDIO_AUDIENCE_CONTEXT',
+      'SPOOFED_STUDIO_STRATEGY_CONTEXT',
+    ]) {
+      assert.equal(genCompiled.combinedPromptText.includes(forbidden), false);
+      assert.equal(genCtxStr.includes(forbidden), false);
+      assert.equal(refineCompiled.combinedPromptText.includes(forbidden), false);
+      assert.equal(refineCtxStr.includes(forbidden), false);
+    }
+
+    // End-to-end executePrompt verification on realistic fixture
+    if (scale === 'realistic') {
+      const genExec = await executePrompt({
+        promptId: 'content_studio_generate_asset',
+        brandId: brand.id,
+        brand,
+        expectedOwnerUserId: brand.userId,
+        strategyModules: [...strategyModules, contentStrategyModule],
+        variables: generateVars,
+        executeAi: async (req) => {
+          assert.equal(req.responseMimeType, 'application/json');
+          assert.ok(req.responseSchema);
+          assert.ok(req.prompt.length <= CONTENT_STUDIO_PROMPT_TARGET_BUDGET);
+          return {
+            text: JSON.stringify({
+              suppliedFactsUsed: ['Brand Positioning', 'Approved Persona 1'],
+              missingContextNotes: [],
+              researchCaveat: 'AI draft requires explicit human review before publishing.',
+              aiSuggestions: {
+                creativeRationale: 'Focuses on buyer positioning clarity.',
+                platformBestPracticesApplied: ['Crisp cover hook', 'Scannable slides'],
+              },
+              asset: {
+                title: '5-Slide B2B Positioning Diagnostic',
+                hook: 'Most B2B consultancies do not have a posting problem.',
+                alternativeHooks: ['Fix positioning before scaling publishing volume.'],
+                mainCopy: 'Use this 5-slide audit before planning next month’s content.',
+                cta: 'Comment AUDIT for the full scorecard.',
+                hashtags: ['#B2BStrategy', '#Positioning'],
+                visualDirection: 'Clean editorial typography on light canvas',
+                carouselSlides: [
+                  { slideNumber: 1, headline: 'Stop Posting More', body: 'Fix positioning first.', visualCue: 'Bold cover' },
+                ],
+                adaptationNotes: 'Ready for LinkedIn native PDF upload.',
+              },
+            }),
+            model: 'gemini-4-hydrogen',
+            generatedAt: now,
+          };
+        },
+      });
+      assert.equal(genExec.status, 'success');
+      assert.equal(genExec.targetModule, 'contentStudio');
+
+      const refineExec = await executePrompt({
+        promptId: 'content_studio_refine_asset',
+        brandId: brand.id,
+        brand,
+        expectedOwnerUserId: brand.userId,
+        strategyModules: [...strategyModules, contentStrategyModule],
+        variables: refineVars,
+        executeAi: async (req) => {
+          assert.equal(req.responseMimeType, 'application/json');
+          assert.ok(req.responseSchema);
+          assert.ok(req.prompt.length <= CONTENT_STUDIO_PROMPT_TARGET_BUDGET);
+          return {
+            text: JSON.stringify({
+              suppliedFactsUsed: ['Brand Positioning'],
+              missingContextNotes: [],
+              researchCaveat: 'AI-refined draft pending human review.',
+              aiSuggestions: {
+                changeSummary: 'Sharpened cover hook and tightened slide copy.',
+                editorialNotes: ['Kept CTA intact.'],
+              },
+              asset: {
+                title: '5-Slide B2B Positioning Diagnostic',
+                hook: 'More content will not fix unclear positioning.',
+                alternativeHooks: ['Your buyers cannot choose you if you sound like everyone else.'],
+                mainCopy: 'Run this 5-minute diagnostic before publishing another post.',
+                cta: 'Comment AUDIT for the scorecard.',
+                hashtags: ['#B2BStrategy'],
+                visualDirection: 'High-contrast slide deck',
+              },
+            }),
+            model: 'gemini-4-hydrogen',
+            generatedAt: now,
+          };
+        },
+      });
+      assert.equal(refineExec.status, 'success');
+      assert.equal(refineExec.targetModule, 'contentStudio');
     }
   }
 });

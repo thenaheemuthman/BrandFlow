@@ -391,3 +391,211 @@ export interface ContentStudioHandoffPayload {
   workflowStatus: CalendarWorkflowStatus;
 }
 
+// ============================================================================
+// PHASE 2B: CONTENT STUDIO TYPES
+// ============================================================================
+
+export type ContentAssetStatus =
+  | 'draft'
+  | 'in_progress'
+  | 'ready_for_review'
+  | 'approved'
+  | 'published'
+  | 'archived';
+
+export type ContentAssetFormatCategory =
+  | 'social_post'
+  | 'educational_post'
+  | 'promotional_post'
+  | 'story_post'
+  | 'short_video_script'
+  | 'carousel'
+  | 'long_form_article'
+  | 'platform_adaptation';
+
+export type ContentAssetSource = 'ai_generated' | 'edited_ai' | 'manual';
+
+export type ContentLengthPreference = 'short' | 'medium' | 'long';
+
+export type ContentStudioRefinementAction =
+  | 'regenerate'
+  | 'refine_section'
+  | 'alternative_hooks'
+  | 'improve_clarity'
+  | 'adjust_tone'
+  | 'shorten'
+  | 'expand'
+  | 'adapt_platform';
+
+export interface ContentCarouselSlide {
+  slideNumber: number;
+  headline: string;
+  body: string;
+  visualCue: string;
+}
+
+export interface ContentVideoScene {
+  sceneNumber: number;
+  visual: string;
+  dialogue: string;
+  durationHint: string;
+}
+
+export interface ContentArticleSection {
+  heading: string;
+  body: string;
+}
+
+export interface ContentAssetBody {
+  hook: string;
+  alternativeHooks: string[];
+  mainCopy: string;
+  cta: string;
+  hashtags: string[];
+  visualDirection: string;
+  carouselSlides: ContentCarouselSlide[];
+  videoScript: {
+    hook: string;
+    scenes: ContentVideoScene[];
+    cta: string;
+  } | null;
+  articleSections: ContentArticleSection[];
+  adaptationNotes: string;
+  suppliedFactsUsed: string[];
+  missingContextNotes: string[];
+  researchCaveat: string;
+}
+
+export interface ContentStudioGenerationOptions {
+  platform: string;
+  formatCategory: ContentAssetFormatCategory;
+  formatLabel: string;
+  toneOfVoice: string;
+  contentLength: ContentLengthPreference;
+  primaryObjective: string;
+  targetAudience: string;
+  ctaPreference: string;
+  additionalInstructions: string;
+}
+
+export interface ContentAssetVersion {
+  id: string;
+  userId: string;
+  brandId: string;
+  assetId: string;
+  versionNumber: number;
+  title: string;
+  body: ContentAssetBody;
+  changeSummary: string;
+  actionType: string;
+  source: ContentAssetSource;
+  promptId: string | null;
+  promptVersion: string | null;
+  model: string | null;
+  createdAt: string;
+}
+
+export interface ContentAsset {
+  id: string;
+  userId: string;
+  brandId: string;
+  calendarId: string | null;
+  calendarItemId: string | null;
+  title: string;
+  platform: string;
+  formatCategory: ContentAssetFormatCategory;
+  formatLabel: string;
+  contentPillar: string;
+  contentTheme: string;
+  targetAudience: string;
+  contentObjective: string;
+  toneOfVoice: string;
+  contentLength: ContentLengthPreference;
+  scheduledDate: string | null;
+  workflowStatus: ContentAssetStatus;
+  source: ContentAssetSource;
+  currentVersionNumber: number;
+  approvedVersionNumber: number | null;
+  approvedAt: string | null;
+  publishedAt: string | null;
+  body: ContentAssetBody;
+  generationOptions: ContentStudioGenerationOptions;
+  handoffSnapshot: ContentStudioHandoffPayload | null;
+  promptId: string | null;
+  promptVersion: string | null;
+  model: string | null;
+  generatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContentAssetWithVersions extends ContentAsset {
+  versions: ContentAssetVersion[];
+}
+
+export interface CreateContentAssetInput {
+  calendarId?: string | null;
+  calendarItemId?: string | null;
+  title: string;
+  platform: string;
+  formatCategory: ContentAssetFormatCategory;
+  formatLabel?: string;
+  contentPillar?: string;
+  contentTheme?: string;
+  targetAudience?: string;
+  contentObjective?: string;
+  toneOfVoice?: string;
+  contentLength?: ContentLengthPreference;
+  scheduledDate?: string | null;
+  workflowStatus?: ContentAssetStatus;
+  source?: ContentAssetSource;
+  body: ContentAssetBody;
+  generationOptions?: ContentStudioGenerationOptions;
+  handoffSnapshot?: ContentStudioHandoffPayload | null;
+  changeSummary?: string;
+  actionType?: string;
+  promptId?: string | null;
+  promptVersion?: string | null;
+  model?: string | null;
+  generatedAt?: string | null;
+}
+
+export interface UpdateContentAssetInput {
+  title?: string;
+  platform?: string;
+  formatCategory?: ContentAssetFormatCategory;
+  formatLabel?: string;
+  contentPillar?: string;
+  contentTheme?: string;
+  targetAudience?: string;
+  contentObjective?: string;
+  toneOfVoice?: string;
+  contentLength?: ContentLengthPreference;
+  scheduledDate?: string | null;
+  workflowStatus?: ContentAssetStatus;
+  source?: ContentAssetSource;
+  body?: ContentAssetBody;
+  generationOptions?: ContentStudioGenerationOptions;
+  promptId?: string | null;
+  promptVersion?: string | null;
+  model?: string | null;
+  generatedAt?: string | null;
+  createVersion?: boolean;
+  changeSummary?: string;
+  actionType?: string;
+}
+
+export interface CreateContentAssetVersionInput {
+  title?: string;
+  body: ContentAssetBody;
+  changeSummary?: string;
+  actionType?: string;
+  source?: ContentAssetSource;
+  workflowStatus?: ContentAssetStatus;
+  promptId?: string | null;
+  promptVersion?: string | null;
+  model?: string | null;
+  generatedAt?: string | null;
+}
+
+
